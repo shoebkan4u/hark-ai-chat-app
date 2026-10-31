@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+<meta name="theme-color" content="#f5f3ee" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#1e1d1a" media="(prefers-color-scheme: dark)">
+<title>Hark AI</title>
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="manifest" href="manifest.webmanifest">
+<style>
+  html,body{margin:0;height:100%;background:#f5f3ee;font-family:system-ui,sans-serif}
+  @media (prefers-color-scheme:dark){html,body{background:#1e1d1a}}
+  #boot{display:flex;align-items:center;justify-content:center;height:100%}
+  #boot svg{width:44px;height:44px;animation:spin 2.4s linear infinite}
+  @keyframes spin{to{transform:rotate(360deg)}}
+</style>
+</head>
+<body>
+<div id="boot"><svg viewBox="0 0 48 48"><g fill="#c8643f"><circle cx="24" cy="8" r="5"/><circle cx="38" cy="18" r="5" opacity=".8"/><circle cx="33" cy="35" r="5" opacity=".6"/><circle cx="15" cy="35" r="5" opacity=".45"/><circle cx="10" cy="18" r="5" opacity=".3"/></g></svg></div>
+<script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/lib/highlight.min.js"></script>
+<script>
+// Loader: always fetch the newest build so a push to the repo reaches the app without reinstalling.
+(function () {
+  function add(tag, attrs) { var el = document.createElement(tag); for (var k in attrs) el[k] = attrs[k]; (tag === 'link' ? document.head : document.body).appendChild(el); return el; }
+  function load(v) {
+    window.HARK_REMOTE_VERSION = v;
+    var q = '?v=' + encodeURIComponent(v);
+    add('link', { rel: 'stylesheet', href: 'style.css' + q });
+    var files = ['core.js', 'llm.js', 'mcp.js', 'tools.js', 'ui.js', 'settings.js', 'app.js'], i = 0;
+    (function next() { if (i >= files.length) return; var s = add('script', { src: files[i++] + q }); s.onload = next; s.onerror = next; })();
+  }
+  fetch('version.json?t=' + Date.now(), { cache: 'no-store' })
+    .then(function (r) { return r.json(); })
+    .then(function (j) { load(j.version || String(Date.now())); })
+    .catch(function () { load('offline-' + Math.floor(Date.now() / 60000)); });
+})();
+</script>
+</body>
+</html>

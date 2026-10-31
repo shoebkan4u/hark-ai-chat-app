@@ -1,0 +1,769 @@
+/* Hark AI — chat UI: thread, composer, drawer, pickers, artifacts, confirmations, voice. */
+(function () {
+  'use strict';
+  const H = window.Hark;
+  const { el, $, icon } = { el: H.el, $: H.$, icon: H.icon };
+  const N = window.HarkNative || null;
+  const ui = (H.ui = {});
+  const S = { chat: null, abort: null, busy: false, pending: [], overlays: [], drawerOpen: false, voice: null };
+  H.state = S;
+
+  // ---------------- skeleton ----------------
+  function skeleton() {
+    document.body.innerHTML = '';
+    const app = el('div', { id: 'app' },
+      el('div', { class: 'topbar' },
+        el('button', { class: 'iconbtn', 'aria-label': 'Menu', html: icon.menu, onclick: openDrawer }),
+        el('button', { class: 'model-btn', id: 'modelBtn', onclick: openModelPicker }),
+        el('button', { class: 'iconbtn', 'aria-label': 'New chat', html: icon.newchat, onclick: () => newChat() })),
+      el('div', { id: 'scroller' }, el('div', { id: 'thread' })),
+      el('div', { class: 'composer-wrap' }, composer()));
+    document.body.append(app, el('div', { class: 'scrim', id: 'scrim', onclick: closeDrawer }), drawer());
+    // hidden pickers
+    document.body.append(
+      el('input', { type: 'file', id: 'pickCamera', accept: 'image/*', capture: 'environment', class: 'hidden', onchange: (e) => addFiles(e.target) }),
+      el('input', { type: 'file', id: 'pickPhotos', accept: 'image/*', multiple: true, class: 'hidden', onchange: (e) => addFiles(e.target) }),
+      el('input', { type: 'file', id: 'pickFiles', accept: '.pdf,.txt,.md,.csv,.tsv,.json,.log,.xml,.html,.js,.py,.kt,.java,.ts,.yaml,.yml,.ini,.conf,text/*,application/pdf,application/json,image/*', multiple: true, class: 'hidden', onchange: (e) => addFiles(e.target) }));
+    const sc = $('#scroller');
+    sc.addEventListener('scroll', () => { S.stick = sc.scrollHeight - sc.scrollTop - sc.clientHeight < 80; }, { passive: true });
+    S.stick = true;
+  }
+
+  function composer() {
+    const ta = el('textarea', { id: 'input', rows: 1, placeholder: 'Chat with Hark', enterkeyhint: 'send' });
+    ta.addEventListener('input', () => { autosize(ta); updateSend(); });
+    ta.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey && !('ontouchstart' in window)) { e.preventDefault(); onSend(); } });
+    return el('div', { class: 'composer' },
+      el('div', { class: 'pending-atts', id: 'patts' }),
+      ta,
+      el('div', { class: 'comp-row' },
+        el('button', { class: 'cbtn', 'aria-label': 'Attach', html: icon.plus, onclick: openAttach }),
+        el('button', { class: 'cbtn', id: 'toolsBtn', 'aria-label': 'Tools', html: icon.tools, onclick: openToolsSheet }),
+        el('div', { class: 'spacer' }),
+        el('button', { class: 'cbtn plain', id: 'micBtn', 'aria-label': 'Dictate', html: icon.mic, onclick: toggleDictation }),
+        el('button', { class: 'voicebtn', id: 'voiceBtn', 'aria-label': 'Voice mode', html: icon.wave, onclick: () => ui.openVoice() }),
+        el('button', { class: 'send hidden', id: 'sendBtn', 'aria-label': 'Send', html: icon.send, onclick: onSend })));
+  }
+  function autosize(ta) { ta.style.height = 'auto'; ta.style.height = Math.min(ta.scrollHeight, 200) + 'px'; }
+  function updateSend() {
+    const has = $('#input').value.trim() || S.pending.length;
+    const sb = $('#sendBtn'), vb = $('#voiceBtn');
+    if (S.busy) { sb.classList.remove('hidden'); sb.classList.add('stop'); sb.innerHTML = icon.stop; sb.setAttribute('aria-label', 'Stop'); vb.classList.add('hidden'); return; }
+    sb.classList.remove('stop'); sb.innerHTML = icon.send; sb.setAttribute('aria-label', 'Send');
+    sb.classList.toggle('hidden', !has); vb.classList.toggle('hidden', !!has);
+    const t = H.settings.tools; $('#toolsBtn').classList.toggle('on', !!(t.web || t.openalgo || t.mcp));
+  }
+  ui.updateSend = updateSend;
+  function setModelBtn() {
+    const b = $('#modelBtn'); if (!b) return;
+    const proj = S.chat && S.chat.projectId && H.settings.projects.find((p) => p.id === S.chat.projectId);
+    b.innerHTML = '';
+    const inner = el('span', null);
+    if (proj) inner.append(el('span', { class: 'proj-pill', text: proj.name }), el('br'));
+    inner.append(document.createTextNode(H.modelLabel(H.settings.model)));
+    b.append(inner); b.insertAdjacentHTML('beforeend', icon.chev);
+  }
+  ui.setModelBtn = setModelBtn;
+
+  // ---------------- drawer ----------------
+  function drawer() {
+    return el('aside', { class: 'drawer', id: 'drawer' },
+      el('div', { class: 'dr-head' },
+        el('label', { class: 'search', html: icon.search }, el('input', { id: 'drSearch', placeholder: 'Search chats', oninput: H.debounce(renderDrawerList, 150) }))),
+      el('div', { class: 'dr-nav' },
+        navItem(icon.newchat, 'New chat', () => { closeDrawer(); newChat(); }),
+        navItem(icon.folder, 'Projects', () => { ui.openProjects(); }),
+        navItem(icon.clock, 'Scheduled tasks', () => { closeDrawer(); H.settingsUI.open('tasks'); }),
+        navItem(icon.brain, 'Memory', () => { closeDrawer(); H.settingsUI.open('memory'); })),
+      el('div', { class: 'dr-list', id: 'drList' }),
+      el('div', { class: 'dr-foot' },
+        el('div', { class: 'avatar', id: 'drAvatar' }), el('div', { class: 'who', id: 'drWho' }),
+        el('button', { class: 'iconbtn', 'aria-label': 'Settings', html: icon.gear, onclick: () => { closeDrawer(); H.settingsUI.open(); } })));
+  }
+  function navItem(ic, text, fn) { return el('button', { class: 'dr-item', onclick: fn, html: ic }, el('span', { class: 't', text })); }
+  async function renderDrawerList() {
+    const q = ($('#drSearch').value || '').toLowerCase().trim();
+    const list = $('#drList'); list.innerHTML = '';
+    const chats = (await H.chats.all()).filter((c) => !q || (c.title || '').toLowerCase().includes(q) || c.messages.some((m) => (m.content || '').toLowerCase().includes(q)));
+    $('#drAvatar').textContent = (H.settings.fullName || H.settings.name || 'S').split(/\s+/).map((w) => w[0]).join('').slice(0, 2).toUpperCase();
+    $('#drWho').textContent = H.settings.fullName || H.settings.name;
+    if (!chats.length) { list.append(el('div', { class: 'note', style: { padding: '12px' }, text: q ? 'No chats match.' : 'Your chats will show up here.' })); return; }
+    const now = new Date(); const day0 = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+    const groups = [['Today', day0], ['Yesterday', day0 - 864e5], ['Previous 7 days', day0 - 7 * 864e5], ['Previous 30 days', day0 - 30 * 864e5], ['Older', 0]];
+    let gi = -1;
+    for (const c of chats) {
+      const g = groups.findIndex((x) => (c.updated || 0) >= x[1]);
+      if (g !== gi) { gi = g; list.append(el('div', { class: 'dr-group', text: groups[g][0] })); }
+      const proj = c.projectId && H.settings.projects.find((p) => p.id === c.projectId);
+      const b = el('button', { class: 'dr-item' + (S.chat && S.chat.id === c.id ? ' active' : ''), onclick: () => { closeDrawer(); openChat(c.id); } },
+        el('span', { class: 't', text: (proj ? proj.name + ' · ' : '') + (c.title || 'New chat') }));
+      longPress(b, (x, y) => ctxMenu(x, y, [
+        [icon.edit, 'Rename', async () => { const t = prompt('Rename chat', c.title || ''); if (t != null) { c.title = t.trim() || c.title; await H.chats.put(c); renderDrawerList(); if (S.chat && S.chat.id === c.id) S.chat.title = c.title; } }],
+        [icon.share, 'Export as Markdown', () => exportChat(c)],
+        [icon.trash, 'Delete', async () => { if (confirm('Delete this chat?')) { await H.chats.del(c.id); if (S.chat && S.chat.id === c.id) newChat(); renderDrawerList(); } }],
+      ]));
+      list.append(b);
+    }
+  }
+  ui.renderDrawerList = renderDrawerList;
+  function openDrawer() { renderDrawerList(); $('#drawer').classList.add('show'); $('#scrim').classList.add('show'); S.drawerOpen = true; }
+  function closeDrawer() { $('#drawer').classList.remove('show'); $('#scrim').classList.remove('show'); S.drawerOpen = false; }
+  ui.closeDrawer = closeDrawer;
+
+  // ---------------- overlays (back button aware) ----------------
+  function pushOverlay(node, onClose) { document.body.append(node); const o = { node, onClose }; S.overlays.push(o); return () => closeOverlay(o); }
+  function closeOverlay(o) { const i = S.overlays.indexOf(o); if (i >= 0) S.overlays.splice(i, 1); o.node.remove(); o.onClose && o.onClose(); }
+  ui.pushOverlay = pushOverlay;
+  H.onBack = () => {
+    if (S.overlays.length) { closeOverlay(S.overlays[S.overlays.length - 1]); return true; }
+    if (S.drawerOpen) { closeDrawer(); return true; }
+    if (S.busy && S.abort) { S.abort.abort(); return true; }
+    return false;
+  };
+  ui.sheet = function (title, build) {
+    let close;
+    const body = el('div', { class: 'sbody' });
+    const scrim = el('div', { class: 'sheet-scrim', onclick: (e) => { if (e.target === scrim) close(); } },
+      el('div', { class: 'sheet' }, el('div', { class: 'grab' }), title ? el('h3', { text: title }) : null, body));
+    close = pushOverlay(scrim);
+    build(body, close);
+    return close;
+  };
+  ui.modal = function (title, html, buttons) {
+    return new Promise((resolve) => {
+      let close;
+      const box = el('div', { class: 'modal' }, el('h3', { text: title }), el('div', { class: 'note', style: { color: 'var(--ink2)', fontSize: '15px' }, html }),
+        el('div', { class: 'btns', style: { justifyContent: 'flex-end' } }, (buttons || [['OK', true]]).map(([t, v, cls]) => el('button', { class: 'btn ' + (cls || ''), text: t, onclick: () => { close(); resolve(v); } }))));
+      const scrim = el('div', { class: 'modal-scrim', onclick: (e) => { if (e.target === scrim) { close(); resolve(null); } } }, box);
+      close = pushOverlay(scrim);
+    });
+  };
+  function ctxMenu(x, y, items) {
+    let close;
+    const m = el('div', { class: 'ctx' }, items.map(([ic, t, fn]) => el('button', { html: ic, onclick: () => { close(); fn(); } }, el('span', { text: t }))));
+    const scrim = el('div', { style: { position: 'fixed', inset: '0', zIndex: 69 }, onclick: () => close() });
+    document.body.append(scrim);
+    close = pushOverlay(m, () => scrim.remove());
+    const w = 210, h = items.length * 44 + 12;
+    m.style.left = Math.max(8, Math.min(x, innerWidth - w - 8)) + 'px';
+    m.style.top = Math.max(8, Math.min(y, innerHeight - h - 8)) + 'px';
+  }
+  function longPress(node, fn) {
+    let t = null, sx = 0, sy = 0;
+    node.addEventListener('touchstart', (e) => { const p = e.touches[0]; sx = p.clientX; sy = p.clientY; t = setTimeout(() => { t = null; fn(sx, sy); if (navigator.vibrate) navigator.vibrate(12); }, 520); }, { passive: true });
+    node.addEventListener('touchmove', (e) => { const p = e.touches[0]; if (Math.abs(p.clientX - sx) > 10 || Math.abs(p.clientY - sy) > 10) { clearTimeout(t); t = null; } }, { passive: true });
+    node.addEventListener('touchend', () => { clearTimeout(t); t = null; });
+    node.addEventListener('contextmenu', (e) => { e.preventDefault(); if (!('ontouchstart' in window)) fn(e.clientX, e.clientY); });
+  }
+
+  // ---------------- chats ----------------
+  function blankChat(projectId) { return { id: H.newId('c'), title: '', created: Date.now(), updated: Date.now(), projectId: projectId || null, messages: [] }; }
+  function newChat(projectId) {
+    if (S.busy && S.abort) S.abort.abort();
+    S.chat = blankChat(projectId); S.pending = []; renderPending(); renderThread(); setModelBtn();
+    const ta = $('#input'); ta.value = ''; autosize(ta); updateSend();
+  }
+  ui.newChat = newChat;
+  async function openChat(id) {
+    if (S.busy && S.abort) S.abort.abort();
+    const c = await H.chats.get(id); if (!c) return;
+    S.chat = c; renderThread(); setModelBtn(); scrollBottom(true);
+  }
+  ui.openChat = openChat;
+  const saveChat = H.debounce(() => { if (S.chat && S.chat.messages.length) H.chats.put(S.chat); }, 400);
+  async function saveNow() { if (S.chat && S.chat.messages.length) { S.chat.updated = Date.now(); await H.chats.put(S.chat); } }
+
+  function greeting() {
+    const h = Number(new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata', hour: 'numeric', hour12: false }));
+    const part = h < 5 ? 'Up late' : h < 12 ? 'Good morning' : h < 17 ? 'Good afternoon' : 'Good evening';
+    return part + ', ' + (H.settings.name || 'there');
+  }
+  function renderThread() {
+    const th = $('#thread'); th.innerHTML = '';
+    if (!S.chat || !S.chat.messages.length) {
+      const chips = [];
+      if (H.oaAccounts().length) chips.push('What’s my P&L today?', 'Show my open positions');
+      chips.push('What’s moving in the markets today?', 'Explain a concept simply', 'Help me write a message');
+      const proj = S.chat && S.chat.projectId && H.settings.projects.find((p) => p.id === S.chat.projectId);
+      th.append(el('div', { class: 'empty' },
+        el('div', { html: H.markSvg }),
+        el('div', { class: 'greet', text: proj ? proj.name : greeting() }),
+        proj ? el('div', { class: 'note', text: proj.instructions ? 'Project instructions are on' : 'New chat in this project' }) : null,
+        el('div', { class: 'chips' }, chips.slice(0, 4).map((c) => el('button', { class: 'chip', text: c, onclick: () => { $('#input').value = c; onSend(); } })))));
+      $('#scroller').scrollTop = 0;
+      return;
+    }
+    S.chat.messages.forEach((m) => th.append(renderMsg(m)));
+  }
+  ui.renderThread = renderThread;
+  function scrollBottom(force) { const sc = $('#scroller'); if (force || S.stick) sc.scrollTop = sc.scrollHeight; }
+
+  // ---------------- markdown + artifacts ----------------
+  const codeStore = new Map();
+  function renderMarkdown(text, streaming) {
+    const blocks = [];
+    const r = new marked.Renderer();
+    r.code = function (a, b) {
+      const code = typeof a === 'object' ? a.text : a; const lang = ((typeof a === 'object' ? a.lang : b) || '').trim().split(/\s+/)[0];
+      const id = 'cb' + Math.random().toString(36).slice(2, 9);
+      codeStore.set(id, { code, lang });
+      if (codeStore.size > 400) codeStore.delete(codeStore.keys().next().value);
+      const lines = code.split('\n').length;
+      const isDoc = /^(md|markdown|html|svg)$/i.test(lang);
+      if (!streaming && (lines > 18 || (isDoc && lines > 6))) {
+        return '<div class="artifact" data-art="' + id + '"><div class="ic">' + (isDoc ? icon.doc : icon.code) + '</div><div><b>' + H.esc(artifactTitle(code, lang)) + '</b><small>' + H.esc((lang || 'text').toUpperCase()) + ' · ' + lines + ' lines · tap to open</small></div></div>';
+      }
+      let hl = H.esc(code);
+      try { if (window.hljs && !streaming) hl = lang && hljs.getLanguage(lang) ? hljs.highlight(code, { language: lang }).value : hljs.highlightAuto(code).value; } catch (_) {}
+      blocks.push(id);
+      return '<div class="codeblock"><div class="cb-head"><span>' + H.esc(lang || 'code') + '</span><button class="mini" data-copy="' + id + '">' + icon.copy + 'Copy</button></div><pre><code>' + hl + '</code></pre></div>';
+    };
+    let html = marked.parse(text || '', { renderer: r, breaks: false, gfm: true });
+    html = DOMPurify.sanitize(html, { ADD_ATTR: ['data-copy', 'data-art', 'target'] });
+    return html;
+  }
+  function artifactTitle(code, lang) {
+    const t = /<title>([^<]+)<\/title>/i.exec(code) || /^#\s+(.+)$/m.exec(code) || /(?:def|function|class|fun)\s+([A-Za-z_]\w*)/.exec(code);
+    return t ? t[1].trim().slice(0, 60) : ({ html: 'Web page', svg: 'Image', md: 'Document', markdown: 'Document', py: 'Python script', python: 'Python script', js: 'Script' }[lang] || 'Code');
+  }
+  function wireContent(node) {
+    node.querySelectorAll('[data-copy]').forEach((b) => (b.onclick = (e) => { e.stopPropagation(); const c = codeStore.get(b.dataset.copy); if (c) H.copy(c.code); }));
+    node.querySelectorAll('[data-art]').forEach((b) => (b.onclick = () => { const c = codeStore.get(b.dataset.art); if (c) openArtifact(c.code, c.lang); }));
+    node.querySelectorAll('a[href]').forEach((a) => (a.onclick = (e) => { e.preventDefault(); H.openExternal(a.href); }));
+  }
+  function openArtifact(code, lang) {
+    let close;
+    const isHtml = /^(html|svg)$/i.test(lang); const isMd = /^(md|markdown)$/i.test(lang);
+    let mode = isHtml || isMd ? 'preview' : 'code';
+    const body = el('div', { class: 'vbody' });
+    const draw = () => {
+      body.innerHTML = '';
+      if (mode === 'preview' && isHtml) { const f = el('iframe', { sandbox: 'allow-scripts' }); f.srcdoc = code; body.append(f); }
+      else if (mode === 'preview' && isMd) { const d = el('div', { class: 'doc content', html: renderMarkdown(code) }); wireContent(d); body.append(d); }
+      else { const pre = el('pre'); const c = el('code'); try { c.innerHTML = lang && hljs.getLanguage(lang) ? hljs.highlight(code, { language: lang }).value : hljs.highlightAuto(code).value; } catch (_) { c.textContent = code; } pre.append(c); body.append(pre); }
+    };
+    const v = el('div', { class: 'viewer' },
+      el('div', { class: 'topbar' },
+        el('button', { class: 'iconbtn', html: icon.close, onclick: () => close() }),
+        el('h2', { text: artifactTitle(code, lang), style: { flex: 1, fontSize: '16px', margin: 0, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' } }),
+        (isHtml || isMd) ? el('button', { class: 'mini', text: 'Code / Preview', onclick: () => { mode = mode === 'code' ? 'preview' : 'code'; draw(); } }) : null,
+        el('button', { class: 'iconbtn', html: icon.copy, onclick: () => H.copy(code) }),
+        el('button', { class: 'iconbtn', html: icon.share, onclick: () => share(artifactTitle(code, lang), code) })),
+      body);
+    close = pushOverlay(v); draw();
+  }
+  function share(title, text) { if (N && N.shareText) N.shareText(title, text); else if (navigator.share) navigator.share({ title, text }).catch(() => {}); else H.copy(text); }
+  function exportChat(c) {
+    const md = '# ' + (c.title || 'Chat') + '\n\n' + c.messages.map((m) => (m.role === 'user' ? '**You:** ' : '**Hark:** ') + (m.content || '')).join('\n\n---\n\n');
+    share(c.title || 'Hark chat', md);
+  }
+  ui.exportChat = exportChat;
+
+  // ---------------- message rendering ----------------
+  function renderMsg(m) {
+    const node = el('div', { class: 'msg ' + m.role, 'data-id': m.id });
+    fillMsg(node, m);
+    return node;
+  }
+  function fillMsg(node, m, streaming) {
+    node.innerHTML = '';
+    if (m.role === 'user') {
+      if (m.atts && m.atts.length) node.append(el('div', { class: 'atts' }, m.atts.map(attView)));
+      if (m.content) { const b = el('div', { class: 'bubble', text: m.content }); longPress(b, (x, y) => msgMenu(x, y, m)); node.append(b); }
+      return;
+    }
+    if (m.reasoning) {
+      const d = el('details', { class: 'reason' }, el('summary', { html: icon.brain + '<span>' + (streaming && !m.content ? 'Thinking…' : 'Thought process') + '</span>' }), el('div', { class: 'rbody', text: m.reasoning }));
+      node.append(d);
+    }
+    (m.steps || []).forEach((s) => node.append(el('div', { class: 'tool ' + (s.state || '') },
+      el('span', { class: 'dot' }), el('span', { class: 'tname', text: s.label }), el('span', { class: 'tsum', text: s.sum || '' }))));
+    if (m.switched) node.append(el('div', { class: 'meta-line', text: 'Switched to ' + H.modelLabel(m.switched.to) + ' (' + m.switched.why.slice(0, 90) + ')' }));
+    const content = el('div', { class: 'content' });
+    if (m.content) {
+      content.innerHTML = renderMarkdown(m.content, streaming);
+      if (streaming) { const last = content.lastElementChild || content; (last.tagName === 'PRE' || last.classList.contains('codeblock') ? content : last).append(el('span', { class: 'cursor' })); }
+      wireContent(content);
+    } else if (streaming && !m.error) {
+      content.append(el('div', { class: 'thinking', html: H.markSvg + '<span>' + (m.steps && m.steps.length ? 'Working…' : 'Thinking…') + '</span>' }));
+    }
+    node.append(content);
+    longPress(content, (x, y) => msgMenu(x, y, m));
+    if (m.sources && m.sources.length) {
+      node.append(el('div', { class: 'sources' }, m.sources.slice(0, 12).map((s, i) => {
+        let host = ''; try { host = new URL(s.url).hostname.replace(/^www\./, ''); } catch (_) {}
+        return el('a', { class: 'src', href: s.url, onclick: (e) => { e.preventDefault(); H.openExternal(s.url); } },
+          el('img', { src: 'https://www.google.com/s2/favicons?sz=32&domain=' + encodeURIComponent(host), alt: '', loading: 'lazy' }), el('span', { text: (i + 1) + '. ' + (s.title || host) }));
+      })));
+    }
+    if (m.error) node.append(el('div', { class: 'err', text: m.error }));
+    if (!streaming) {
+      const acts = el('div', { class: 'actions' },
+        el('button', { class: 'iconbtn', 'aria-label': 'Copy', html: icon.copy, onclick: () => H.copy(m.content || '') }),
+        el('button', { class: 'iconbtn', 'aria-label': 'Read aloud', html: icon.speak, onclick: () => ui.speak(m.content || '') }),
+        el('button', { class: 'iconbtn', 'aria-label': 'Retry', html: icon.retry, onclick: () => retry(m) }),
+        el('button', { class: 'iconbtn' + (m.rating === 1 ? ' on' : ''), 'aria-label': 'Good response', html: icon.up, onclick: () => rate(m, 1) }),
+        el('button', { class: 'iconbtn' + (m.rating === -1 ? ' on' : ''), 'aria-label': 'Bad response', html: icon.down, onclick: () => rate(m, -1) }));
+      node.append(acts);
+      if (m.model) node.append(el('div', { class: 'meta-line', text: H.modelLabel(m.model) + (m.keyLabel ? ' · ' + m.keyLabel : '') }));
+    }
+  }
+  function attView(a) {
+    if (a.kind === 'image') return el('img', { class: 'att-thumb', src: a.dataUrl, alt: a.name, onclick: () => { const close = pushOverlay(el('div', { class: 'viewer', onclick: () => close() }, el('img', { src: a.dataUrl, style: { maxWidth: '100%', maxHeight: '100%', margin: 'auto' } }))); } });
+    return el('div', { class: 'att-file', html: icon.file }, el('div', null, el('b', { text: a.name }), el('small', { text: (a.ext || 'file').toUpperCase() + ' · ' + Math.round((a.chars || 0) / 1000) + 'k chars' })));
+  }
+  function rate(m, v) { m.rating = m.rating === v ? 0 : v; saveChat(); refreshMsg(m); if (v === -1 && m.rating === -1) H.toast('Thanks — noted'); }
+  function refreshMsg(m, streaming) {
+    const node = document.querySelector('.msg[data-id="' + m.id + '"]');
+    if (node) fillMsg(node, m, streaming);
+  }
+  function msgMenu(x, y, m) {
+    const items = [[icon.copy, 'Copy', () => H.copy(m.content || '')], [icon.speak, 'Read aloud', () => ui.speak(m.content || '')], [icon.share, 'Share', () => share('Hark', m.content || '')]];
+    if (m.role === 'user') items.push([icon.edit, 'Edit & resend', () => editUser(m)]);
+    else items.push([icon.retry, 'Retry', () => retry(m)]);
+    items.push([icon.trash, 'Delete', () => { const i = S.chat.messages.indexOf(m); if (i >= 0) { S.chat.messages.splice(i, 1); saveNow(); renderThread(); } }]);
+    ctxMenu(x, y, items);
+  }
+  function editUser(m) {
+    if (S.busy) return;
+    const i = S.chat.messages.indexOf(m); if (i < 0) return;
+    S.chat.messages = S.chat.messages.slice(0, i); S.pending = (m.atts || []).slice(); renderPending();
+    const ta = $('#input'); ta.value = m.content || ''; autosize(ta); updateSend(); ta.focus();
+    saveNow(); renderThread();
+  }
+  function retry(m) {
+    if (S.busy) return;
+    const i = S.chat.messages.indexOf(m); if (i < 0) return;
+    S.chat.messages = S.chat.messages.slice(0, i);
+    renderThread(); runAssistant();
+  }
+
+  // ---------------- attachments ----------------
+  function openAttach() {
+    ui.sheet(null, (b, close) => {
+      const opt = (ic, t, sub, fn) => el('button', { class: 'opt', html: ic, onclick: () => { close(); fn(); } }, el('span', { class: 't', html: H.esc(t) + (sub ? '<small>' + H.esc(sub) + '</small>' : '') }));
+      b.append(opt(icon.camera, 'Camera', 'Take a photo', () => $('#pickCamera').click()),
+        opt(icon.image, 'Photos', 'Images for vision models', () => $('#pickPhotos').click()),
+        opt(icon.file, 'Files', 'PDF, text, CSV, code', () => $('#pickFiles').click()));
+    });
+  }
+  async function addFiles(input) {
+    const files = Array.from(input.files || []); input.value = '';
+    for (const f of files) {
+      try {
+        if (f.type.startsWith('image/')) S.pending.push({ kind: 'image', name: f.name, dataUrl: await downscale(f) });
+        else {
+          const ext = (f.name.split('.').pop() || '').toLowerCase();
+          let text = ext === 'pdf' || f.type === 'application/pdf' ? await pdfText(f) : await f.text();
+          if (text.length > 120000) text = text.slice(0, 120000) + '\n…[truncated]';
+          S.pending.push({ kind: 'file', name: f.name, ext, text, chars: text.length });
+        }
+      } catch (e) { H.toast('Couldn’t read ' + f.name + ': ' + e.message); }
+    }
+    renderPending(); updateSend();
+  }
+  function downscale(file) {
+    return new Promise((res, rej) => {
+      const img = new Image(); const url = URL.createObjectURL(file);
+      img.onload = () => {
+        const max = 1600; let { width: w, height: h } = img; const k = Math.min(1, max / Math.max(w, h)); w = Math.round(w * k); h = Math.round(h * k);
+        const c = document.createElement('canvas'); c.width = w; c.height = h; c.getContext('2d').drawImage(img, 0, 0, w, h);
+        URL.revokeObjectURL(url); res(c.toDataURL('image/jpeg', 0.85));
+      };
+      img.onerror = () => rej(new Error('not an image')); img.src = url;
+    });
+  }
+  async function pdfText(file) {
+    const lib = await import('https://cdn.jsdelivr.net/npm/pdfjs-dist@4.4.168/build/pdf.min.mjs');
+    lib.GlobalWorkerOptions.workerSrc = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.4.168/build/pdf.worker.min.mjs';
+    const pdf = await lib.getDocument({ data: new Uint8Array(await file.arrayBuffer()) }).promise;
+    const out = [];
+    for (let i = 1; i <= Math.min(pdf.numPages, 200); i++) {
+      const p = await pdf.getPage(i); const tc = await p.getTextContent();
+      out.push('--- page ' + i + ' ---\n' + tc.items.map((x) => x.str + (x.hasEOL ? '\n' : ' ')).join(''));
+    }
+    const t = out.join('\n');
+    if (t.replace(/--- page \d+ ---|\s/g, '').length < 20) throw new Error('this PDF has no text layer (scanned). Send pages as photos instead.');
+    return t;
+  }
+  function renderPending() {
+    const p = $('#patts'); p.innerHTML = '';
+    S.pending.forEach((a, i) => p.append(el('div', { class: 'patt' }, attView(a), el('button', { class: 'x', text: '×', onclick: () => { S.pending.splice(i, 1); renderPending(); updateSend(); } }))));
+  }
+
+  // ---------------- send / agent loop ----------------
+  function onSend() {
+    if (S.busy) { if (S.abort) S.abort.abort(); return; }
+    const ta = $('#input'); const text = ta.value.trim();
+    if (!text && !S.pending.length) return;
+    ta.value = ''; autosize(ta);
+    ui.send(text, S.pending.splice(0)); renderPending();
+  }
+  ui.send = function (text, atts, opts) {
+    if (!S.chat) S.chat = blankChat();
+    const um = { id: H.newId('m'), role: 'user', content: text, atts: atts || [], ts: Date.now() };
+    if (!S.chat.messages.length) { S.chat.title = (text || (atts[0] && atts[0].name) || 'New chat').replace(/\s+/g, ' ').slice(0, 60); }
+    S.chat.messages.push(um);
+    renderThread(); scrollBottom(true);
+    return runAssistant(opts);
+  };
+
+  function systemPrompt() {
+    const mem = H.settings.tools.memory ? H.memory.list() : [];
+    const proj = S.chat.projectId && H.settings.projects.find((p) => p.id === S.chat.projectId);
+    const accs = H.oaAccounts();
+    let s = 'You are Hark AI, Shoeb\'s personal AI assistant in his Android app. Be warm, direct and concise: answer first, then detail only if useful. Use Markdown (short paragraphs, lists, tables when they help). For long code or documents use fenced code blocks with a language tag.\n';
+    s += 'Current date and time: ' + H.istNow() + ' (IST, Asia/Kolkata). The user: ' + (H.settings.fullName || 'Shoeb') + ' (call him ' + (H.settings.name || 'Shoeb') + '), in India; amounts in ₹ unless stated.\n';
+    s += 'Use tools when they help: web_search for anything current (cite sources as [1], [2] matching the search results order), fetch_url to read a page.';
+    if (accs.length) s += ' Broker tools: openalgo_read is read-only. ' + accs.map((a) => a.name + ' is ' + (a.mode === 'LIVE' ? 'a LIVE real-money account' : 'a PAPER (analyzer) account')).join('; ') + '. You can only prepare an order ticket with openalgo_place_order when the user explicitly asks; the user must confirm on screen. Never claim an order was placed unless the tool returned status placed_after_user_confirmation. You cannot modify, cancel or close orders, or toggle analyzer mode.';
+    s += ' MCP tools from connected servers are available when listed; anything that moves money needs the user\'s on-screen confirmation.';
+    s += '\nNever reveal API keys, passwords or tokens, and never ask the user to paste them into chat (keys go in Settings → Keys).\n';
+    if (mem.length) s += '\nThings the user asked you to remember (on-device memory):\n' + mem.map((m) => '- ' + m.text).join('\n') + '\n';
+    if (H.settings.tools.memory) s += 'If the user shares a lasting preference or fact, or asks you to remember something, call memory_save.\n';
+    if (H.settings.knowledge) s += '\nBackground about the user (imported from Hark):\n' + H.settings.knowledge.slice(0, 8000) + '\n';
+    if (proj && proj.instructions) s += '\nProject "' + proj.name + '" instructions:\n' + proj.instructions + '\n';
+    return s;
+  }
+  function historyMessages(upto) {
+    const out = [];
+    for (const m of S.chat.messages.slice(0, upto)) {
+      if (m.role === 'user') {
+        let c = m.content || '';
+        (m.atts || []).filter((a) => a.kind === 'file').forEach((a) => { c += '\n\n<file name="' + a.name + '">\n' + a.text + '\n</file>'; });
+        out.push({ role: 'user', content: c, images: (m.atts || []).filter((a) => a.kind === 'image').map((a) => a.dataUrl) });
+      } else if (m.role === 'assistant') {
+        (m.trace || []).forEach((t) => out.push(t.role === 'tool' ? { role: 'tool', tool_call_id: t.tool_call_id, content: String(t.content).slice(0, 4000) } : t));
+        if (m.content || !(m.trace && m.trace.length)) out.push({ role: 'assistant', content: m.content || '(no answer)' });
+      }
+    }
+    // Drop images from older turns to save tokens: keep only the latest user images.
+    let seen = false;
+    for (let i = out.length - 1; i >= 0; i--) if (out[i].images && out[i].images.length) { if (seen) out[i] = Object.assign({}, out[i], { images: [], content: out[i].content + '\n[image sent earlier]' }); seen = true; }
+    return out;
+  }
+
+  async function runAssistant(opts) {
+    opts = opts || {};
+    const chat = S.chat;
+    const am = { id: H.newId('m'), role: 'assistant', content: '', steps: [], trace: [], sources: [], ts: Date.now() };
+    const convo = [{ role: 'system', content: systemPrompt() }].concat(historyMessages(chat.messages.length));
+    chat.messages.push(am);
+    $('#thread').append(renderMsg(am)); fillMsg(document.querySelector('.msg[data-id="' + am.id + '"]'), am, true);
+    scrollBottom(true);
+    S.busy = true; S.abort = new AbortController(); updateSend();
+    let model = H.settings.model;
+    const needVision = convo.some((m) => m.images && m.images.length);
+    if (needVision && !H.modelInfo(model).vision) {
+      const v = H.recommended().find((id) => H.modelInfo(id).vision) || Object.keys(H.catalog.models).find((id) => H.catalog.models[id].vision && H.providerReady(id.split(':')[0]));
+      if (v) { am.switched = { to: v, why: H.modelLabel(model) + ' can’t see images' }; model = v; }
+    }
+    let raf = 0; const paint = () => { if (raf) return; raf = requestAnimationFrame(() => { raf = 0; refreshMsg(am, true); scrollBottom(); }); };
+    let prefix = '';
+    try {
+      const reg = await H.buildTools().catch(() => ({ defs: [], run: {} }));
+      for (let round = 0; round < 8; round++) {
+        const r = await H.complete(model, convo, reg.defs, {
+          onText: (t) => { am.content = prefix + t; paint(); },
+          onReasoning: (t) => { am.reasoning = t; paint(); },
+          onSwitch: (from, to, why) => { am.switched = { to, why }; model = to; paint(); },
+        }, S.abort.signal);
+        am.model = r.model; am.keyLabel = r.keyLabel; model = r.model;
+        am.content = prefix + (r.content || '');
+        if (r.finish === 'aborted' || S.abort.signal.aborted) break;
+        const calls = (r.tool_calls || []).filter((c) => c && c.function && c.function.name);
+        if (!calls.length) break;
+        const asst = { role: 'assistant', content: r.content || '', tool_calls: calls.map((c) => ({ id: c.id, type: 'function', function: { name: c.function.name, arguments: c.function.arguments || '{}' } })) };
+        convo.push(asst); am.trace.push(asst);
+        if (r.content) prefix = am.content + '\n\n';
+        for (const c of asst.tool_calls) {
+          const meta = reg.run[c.function.name] || {};
+          let args = {}; try { args = JSON.parse(c.function.arguments || '{}'); } catch (_) {}
+          const step = { label: meta.label || c.function.name, sum: meta.sum ? safe(() => meta.sum(args)) : '', state: 'run' };
+          am.steps.push(step); paint();
+          let result;
+          try { result = await H.runTool(reg, c); step.state = result && (result.error || result.status === 'declined' || result.status === 'blocked') ? 'fail' : 'ok'; }
+          catch (e) { result = { error: e.message }; step.state = 'fail'; step.sum = (step.sum ? step.sum + ' — ' : '') + e.message; }
+          if (result && result.sources) result.sources.forEach((s) => { if (s.url && !am.sources.some((x) => x.url === s.url)) am.sources.push(s); });
+          const tm = { role: 'tool', tool_call_id: c.id, content: H.clip(result == null ? 'null' : result) };
+          convo.push(tm); am.trace.push(tm); paint();
+        }
+        if (round === 7) am.content += '\n\n_(Stopped after several tool rounds.)_';
+      }
+      if (!am.content.trim() && !S.abort.signal.aborted) am.content = am.steps.length ? '_(The model returned no text after using tools.)_' : '';
+      if (!am.content.trim() && !am.error && !S.abort.signal.aborted) am.error = 'The model sent an empty reply. Try again or pick another model.';
+    } catch (e) {
+      am.error = friendlyError(e);
+    } finally {
+      S.busy = false; S.abort = null; updateSend();
+      am.steps.forEach((s) => { if (s.state === 'run') s.state = 'fail'; });
+      if (raf) cancelAnimationFrame(raf);
+      refreshMsg(am, false); scrollBottom();
+      if (chat === S.chat) await saveNow(); else await H.chats.put(chat);
+    }
+    if (opts.speak || (H.settings.voice.autoSpeak && !opts.silent)) await ui.speak(am.content || am.error || '');
+    return am;
+  }
+  ui.runAssistant = runAssistant;
+  function safe(f) { try { return f(); } catch (_) { return ''; } }
+  function friendlyError(e) {
+    const m = e.message || String(e);
+    if (/1010/.test(m)) return 'Groq blocked this network (Cloudflare 1010). Switch network or pick another model.';
+    if (e.code === 'nokey') return m;
+    return m;
+  }
+
+  // ---------------- model picker ----------------
+  function openModelPicker() {
+    ui.sheet('Model', (b, close) => {
+      const q = el('input', { placeholder: 'Search models', style: { border: 0, outline: 0, background: 'transparent', flex: 1, fontSize: '15px' } });
+      const list = el('div');
+      b.append(el('label', { class: 'search', style: { margin: '0 4px 6px' }, html: icon.search }, q), list);
+      const newIds = new Set(H.catalog.newIds || []);
+      const row = (full) => {
+        const m = H.modelInfo(full);
+        const sel = full === H.settings.model;
+        const badges = (newIds.has(full) ? '<span class="badge new">NEW</span>' : '') + (m.vision ? '<span class="badge">vision</span>' : '') + (m.tools === false ? '<span class="badge">no tools</span>' : '');
+        return el('button', { class: 'opt', onclick: () => { H.settings.model = full; H.saveSettings(); newIds.delete(full); H.catalog.newIds = [...newIds]; localStorage.setItem('hark.catalog', JSON.stringify(H.catalog)); setModelBtn(); close(); } },
+          el('span', { class: 't', html: H.esc(H.modelLabel(full)) + badges + '<small>' + H.esc(H.PROVIDERS[m.provider] ? H.PROVIDERS[m.provider].name : m.provider) + ' · ' + H.esc(m.id) + '</small>' }),
+          sel ? el('span', { class: 'check', html: icon.check }) : null);
+      };
+      const draw = () => {
+        list.innerHTML = '';
+        const term = q.value.toLowerCase().trim();
+        const match = (full) => !term || full.toLowerCase().includes(term) || H.modelLabel(full).toLowerCase().includes(term);
+        const rec = H.recommended().filter(match);
+        if (rec.length) { list.append(el('div', { class: 'mp-group', text: 'Recommended' })); rec.forEach((id) => list.append(row(id))); }
+        const by = {};
+        Object.keys(H.catalog.models).forEach((id) => { const p = id.split(':')[0]; if (!H.providerReady(p) || !match(id)) return; (by[p] = by[p] || []).push(id); });
+        Object.keys(H.PROVIDERS).forEach((p) => {
+          if (!by[p]) return;
+          const ids = by[p].sort((a, b) => (newIds.has(b) - newIds.has(a)) || a.localeCompare(b));
+          list.append(el('div', { class: 'mp-group', text: H.PROVIDERS[p].name + ' (' + ids.length + ')' + (H.PROVIDERS[p].note ? ' · ' + H.PROVIDERS[p].note : '') }));
+          ids.forEach((id) => list.append(row(id)));
+        });
+        if (!list.children.length) list.append(el('div', { class: 'note', style: { padding: '12px' }, text: term ? 'No models match.' : 'Add a key in Settings → Keys to see models.' }));
+        const errs = Object.entries(H.catalog.errors || {});
+        list.append(el('div', { class: 'note', style: { padding: '8px 12px' }, text: 'Catalog updated ' + (H.catalog.updated ? new Date(H.catalog.updated).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }) : 'never') + (errs.length ? ' · issues: ' + errs.map(([p, e]) => p + ' ' + e).join('; ') : '') }));
+        list.append(el('button', { class: 'btn ghost', style: { margin: '4px 12px 12px' }, text: 'Refresh model list', onclick: async (e) => { e.target.disabled = true; e.target.textContent = 'Refreshing…'; await ui.refreshCatalog(true); draw(); } }));
+      };
+      q.oninput = draw; draw();
+    });
+  }
+  ui.openModelPicker = openModelPicker;
+  ui.refreshCatalog = async function (manual) {
+    try {
+      const r = await H.refreshCatalog();
+      if (r.added.length) {
+        const names = r.added.slice(0, 12).map((id) => '• ' + H.esc(H.modelLabel(id)) + ' <small>(' + H.esc(H.PROVIDERS[id.split(':')[0]].name) + ')</small>').join('<br>');
+        const go = await ui.modal(r.added.length + ' new model' + (r.added.length > 1 ? 's' : '') + ' available', names + (r.added.length > 12 ? '<br>…and ' + (r.added.length - 12) + ' more' : ''), [['Later', false, 'ghost'], ['See models', true]]);
+        if (go) openModelPicker();
+      } else if (manual) H.toast('Model list is up to date' + (r.removed.length ? ' · ' + r.removed.length + ' retired' : ''));
+      if (r.removed.length && !manual) H.toast(r.removed.length + ' retired model' + (r.removed.length > 1 ? 's' : '') + ' removed');
+    } catch (e) { if (manual) H.toast('Refresh failed: ' + e.message); }
+    setModelBtn();
+  };
+  H.emit = (type, d) => { if (type === 'model-fallback') H.toast(H.modelLabel(d.old) + ' was retired — switched to ' + H.modelLabel(d.now)); };
+
+  // ---------------- tools sheet ----------------
+  function openToolsSheet() {
+    ui.sheet('Tools', (b) => {
+      const t = H.settings.tools;
+      const sw = (key, ic, title, sub) => {
+        const inp = el('input', { type: 'checkbox' }); inp.checked = !!t[key];
+        inp.onchange = () => { t[key] = inp.checked; H.saveSettings(); updateSend(); };
+        return el('label', { class: 'opt', html: ic }, el('span', { class: 't', html: H.esc(title) + '<small>' + H.esc(sub) + '</small>' }), el('span', { class: 'switch' }, inp, el('i')));
+      };
+      const accs = H.oaAccounts();
+      const mcpOn = H.settings.mcpServers.filter((s) => s.enabled);
+      b.append(
+        sw('web', icon.globe, 'Web search', H.vault.has('gemini') ? 'Google Search via Gemini, with sources' : 'Free web search with sources'),
+        sw('openalgo', icon.chart, 'OpenAlgo brokers', accs.length ? accs.map((a) => a.name + (a.mode === 'LIVE' ? ' (LIVE)' : ' (paper)')).join(' · ') + ' · read-only' : 'Import keys to connect TradeSmart and Wisdom'),
+        sw('mcp', icon.plug, 'MCP servers', mcpOn.length ? mcpOn.map((s) => s.name).join(' · ') : 'None connected yet'),
+        sw('memory', icon.brain, 'Memory', H.memory.list().length + ' saved on this phone'),
+        el('button', { class: 'opt', html: icon.gear, onclick: () => H.settingsUI.open('brokers') }, el('span', { class: 't', text: 'Manage brokers and MCP servers' })));
+    });
+  }
+
+  // ---------------- confirmations ----------------
+  ui.confirmOrder = function (o, acc) {
+    return new Promise((resolve) => {
+      const live = acc.mode === 'LIVE';
+      let close; let done = false;
+      const finish = (v) => { if (done) return; done = true; close(); resolve(v); };
+      const cell = (k, v, cls) => el('div', { class: 'cell ' + (cls || '') }, el('small', { text: k }), el('b', { text: v }));
+      const go = el('button', { class: 'go' + (live ? '' : ' paper'), text: (live ? 'Place LIVE order' : 'Place paper order') });
+      go.onclick = async () => {
+        go.disabled = true;
+        if (N && H.settings.requireBiometricForOrders && N.biometricAvailable()) {
+          const r = await H.nativeCall('biometric', 'Confirm ' + o.action + ' ' + o.quantity + ' ' + o.symbol, acc.name + (live ? ' · LIVE money' : ' · paper'));
+          if (!r || !r.ok) { go.disabled = false; H.toast('Not confirmed'); return; }
+        }
+        finish(true);
+      };
+      const v = el('div', { class: 'order' },
+        el('div', { class: 'top' }, el('span', { class: 'modebadge ' + (live ? 'live' : 'paper'), text: live ? 'LIVE' : 'PAPER' }), el('span', { style: { color: 'var(--muted)' }, text: acc.name + ' · OpenAlgo' })),
+        el('h2', { text: (o.action === 'BUY' ? 'Buy ' : 'Sell ') + o.symbol }),
+        el('div', { class: 'note', text: 'Hark prepared this order. Nothing is sent unless you confirm.' }),
+        el('div', { class: 'grid' },
+          cell('Side', o.action, o.action === 'BUY' ? 'side-buy' : 'side-sell'), cell('Quantity', o.quantity),
+          cell('Symbol', o.symbol), cell('Exchange', o.exchange), cell('Product', o.product), cell('Price type', o.pricetype),
+          cell('Price', o.pricetype === 'MARKET' ? 'Market' : '₹' + o.price), cell('Trigger', +o.trigger_price ? '₹' + o.trigger_price : '—')),
+        el('div', { class: 'warn', text: live ? 'This is your LIVE TradeSmart account: real money. Check every field.' : 'This goes to the paper (analyzer) account. No real money.' }),
+        el('div', { class: 'foot' }, go, el('button', { class: 'btn ghost block', text: 'Cancel', onclick: () => finish(false) })));
+      close = pushOverlay(v, () => { if (!done) { done = true; resolve(false); } });
+      if (S.voice) S.voice.pause && S.voice.pause();
+    });
+  };
+  ui.confirmAction = function ({ title, server, tool, args }) {
+    return new Promise((resolve) => {
+      let close; let done = false;
+      const finish = (v) => { if (done) return; done = true; close(); resolve(v); };
+      const go = el('button', { class: 'go', text: 'Confirm' });
+      go.onclick = async () => {
+        go.disabled = true;
+        if (N && H.settings.requireBiometricForOrders && N.biometricAvailable()) {
+          const r = await H.nativeCall('biometric', 'Confirm ' + (tool.title || tool.name), server.name);
+          if (!r || !r.ok) { go.disabled = false; return; }
+        }
+        finish(true);
+      };
+      const v = el('div', { class: 'order' },
+        el('div', { class: 'top' }, el('span', { class: 'modebadge live', text: 'ACTION' }), el('span', { style: { color: 'var(--muted)' }, text: server.name + ' · MCP' })),
+        el('h2', { text: title }),
+        el('div', { class: 'note', text: tool.description ? tool.description.slice(0, 300) : '' }),
+        el('pre', { style: { background: 'var(--card)', border: '1px solid var(--line)', borderRadius: '14px', padding: '12px', overflow: 'auto', fontSize: '13px', marginTop: '14px' }, text: JSON.stringify(args, null, 2) }),
+        el('div', { class: 'warn', text: 'This tool can change things in your account (orders or money). It runs only if you confirm.' }),
+        el('div', { class: 'foot' }, go, el('button', { class: 'btn ghost block', text: 'Cancel', onclick: () => finish(false) })));
+      close = pushOverlay(v, () => { if (!done) { done = true; resolve(false); } });
+    });
+  };
+
+  // ---------------- speech ----------------
+  const plain = (md) => String(md || '').replace(/```[\s\S]*?```/g, ' (code omitted) ').replace(/`([^`]+)`/g, '$1').replace(/!\[[^\]]*\]\([^)]*\)/g, '').replace(/\[([^\]]+)\]\([^)]*\)/g, '$1').replace(/[#*_>|~-]{1,}/g, ' ').replace(/\[\d+\]/g, '').replace(/\s+/g, ' ').trim();
+  ui.speak = function (text) {
+    const t = plain(text); if (!t) return Promise.resolve();
+    if (N) return new Promise((res) => { const id = H.newId('tts'); H.nativeCallRaw(id, (type) => { if (type === 'done') { H.nativeDone(id); res(); } }); N.ttsSpeak(id, t, H.settings.voice.rate || 1); });
+    if (!window.speechSynthesis) return Promise.resolve();
+    return new Promise((res) => { speechSynthesis.cancel(); const u = new SpeechSynthesisUtterance(t); u.lang = H.settings.voice.lang; u.rate = H.settings.voice.rate || 1; u.onend = u.onerror = () => res(); speechSynthesis.speak(u); });
+  };
+  ui.stopSpeaking = () => { if (N) N.ttsStop(); else if (window.speechSynthesis) speechSynthesis.cancel(); };
+  /** listen(cb): cb.onPartial, onFinal, onRms, onError, onEnd. Returns {stop, cancel} */
+  ui.listen = function (cb) {
+    if (N) {
+      const id = H.newId('stt');
+      H.nativeCallRaw(id, (type, d) => {
+        if (type === 'partial') cb.onPartial && cb.onPartial(d.text);
+        else if (type === 'final') { cb.onFinal && cb.onFinal(d.text); H.nativeDone(id); }
+        else if (type === 'rms') cb.onRms && cb.onRms(d.v);
+        else if (type === 'error') { cb.onError && cb.onError(d.message); H.nativeDone(id); }
+      }, true);
+      N.sttStart(id, H.settings.voice.lang || 'en-IN');
+      return { stop: () => N.sttStop(), cancel: () => { N.sttCancel(); H.nativeDone(id); } };
+    }
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SR) { cb.onError && cb.onError('Speech recognition isn’t available in this browser'); return { stop() {}, cancel() {} }; }
+    const r = new SR(); r.lang = H.settings.voice.lang || 'en-IN'; r.interimResults = true; r.continuous = false;
+    let fin = '';
+    r.onresult = (e) => { let t = ''; for (const x of e.results) { t += x[0].transcript; if (x.isFinal) fin = t; } cb.onPartial && cb.onPartial(t); };
+    r.onerror = (e) => cb.onError && cb.onError(e.error);
+    r.onend = () => { if (fin) cb.onFinal && cb.onFinal(fin); else cb.onError && cb.onError('no_match'); };
+    r.start();
+    return { stop: () => r.stop(), cancel: () => r.abort() };
+  };
+
+  let dict = null;
+  function toggleDictation() {
+    const btn = $('#micBtn'); const ta = $('#input');
+    if (dict) { dict.stop(); return; }
+    const base = ta.value ? ta.value.replace(/\s*$/, ' ') : '';
+    btn.classList.add('dictating');
+    const end = () => { btn.classList.remove('dictating'); dict = null; updateSend(); };
+    dict = ui.listen({
+      onPartial: (t) => { ta.value = base + t; autosize(ta); },
+      onFinal: (t) => { ta.value = base + t; autosize(ta); end(); },
+      onError: (e) => { if (e !== 'no_match' && e !== 'timeout') H.toast('Mic: ' + e); end(); },
+    });
+  }
+
+  // ---------------- voice mode ----------------
+  ui.openVoice = function () {
+    if (S.voice) return;
+    const orb = el('div', { class: 'orb' });
+    const status = el('div', { class: 'vstatus', text: 'Starting…' });
+    const said = el('div', { class: 'vtext' });
+    let muted = false; let closed = false; let rec = null;
+    const muteBtn = el('button', { html: icon.mic, 'aria-label': 'Mute' });
+    let close;
+    const v = el('div', { class: 'voice' },
+      el('div', { class: 'vtop' }, el('span', { text: H.modelLabel(H.settings.model) }), el('span', { text: 'Voice' })),
+      el('div', { class: 'orb-wrap' }, orb),
+      el('div', { style: { width: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center' } }, status, said,
+        el('div', { class: 'vctrl' }, muteBtn, el('button', { class: 'end', html: icon.close, 'aria-label': 'End', onclick: () => close() }))));
+    const setState = (st, txt) => { orb.className = 'orb ' + st; status.textContent = txt; };
+    const listen = () => {
+      if (closed) return;
+      if (muted) { setState('', 'Muted — tap the mic to talk'); return; }
+      setState('listening', 'Listening…'); said.textContent = '';
+      rec = ui.listen({
+        onRms: (db) => { const k = Math.max(0, Math.min(1, (db + 2) / 12)); orb.style.transform = 'scale(' + (1 + k * 0.28) + ')'; },
+        onPartial: (t) => { said.textContent = t; },
+        onFinal: async (t) => {
+          rec = null; orb.style.transform = '';
+          if (closed) return;
+          if (!t.trim()) return listen();
+          said.textContent = t; setState('thinking', 'Thinking…');
+          const am = await ui.send(t, [], { silent: true });
+          if (closed) return;
+          setState('speaking', 'Speaking…'); said.textContent = plain(am.content || am.error).slice(0, 400);
+          await ui.speak(am.content || am.error || 'Sorry, I had no answer.');
+          listen();
+        },
+        onError: (e) => { rec = null; orb.style.transform = ''; if (closed) return; if (e === 'no_match' || e === 'timeout') { listen(); } else { setState('', 'Mic problem: ' + e); } },
+      });
+    };
+    muteBtn.onclick = () => { muted = !muted; muteBtn.innerHTML = muted ? icon.mute : icon.mic; if (muted) { if (rec) rec.cancel(); rec = null; ui.stopSpeaking(); setState('', 'Muted — tap the mic to talk'); } else listen(); };
+    close = pushOverlay(v, () => { closed = true; if (rec) rec.cancel(); ui.stopSpeaking(); if (S.busy && S.abort) S.abort.abort(); S.voice = null; });
+    S.voice = { pause: () => { if (rec) rec.cancel(); rec = null; } };
+    if (!S.chat || S.chat.messages.length === 0) S.chat = S.chat || blankChat();
+    listen();
+  };
+
+  // ---------------- projects ----------------
+  ui.openProjects = function () {
+    closeDrawer();
+    ui.sheet('Projects', (b, close) => {
+      const draw = () => {
+        b.innerHTML = '';
+        H.settings.projects.forEach((p) => {
+          const row = el('button', { class: 'opt', html: icon.folder, onclick: () => { close(); newChat(p.id); } }, el('span', { class: 't', html: H.esc(p.name) + '<small>' + H.esc(p.instructions ? p.instructions.slice(0, 80) : 'No instructions') + '</small>' }));
+          longPress(row, (x, y) => ctxMenu(x, y, [
+            [icon.edit, 'Edit', () => { close(); editProject(p); }],
+            [icon.trash, 'Delete project', () => { if (confirm('Delete project "' + p.name + '"? Chats stay in Recents.')) { H.settings.projects = H.settings.projects.filter((x) => x !== p); H.saveSettings(); draw(); } }],
+          ]));
+          b.append(row);
+        });
+        if (!H.settings.projects.length) b.append(el('div', { class: 'note', style: { padding: '4px 12px 8px' }, text: 'Projects keep chats with their own standing instructions — for example “Trading research” or “Agra trip”.' }));
+        b.append(el('button', { class: 'opt', html: icon.plus, onclick: () => { close(); editProject(null); } }, el('span', { class: 't', text: 'New project' })));
+      };
+      draw();
+    });
+  };
+  function editProject(p) {
+    ui.sheet(p ? 'Edit project' : 'New project', (b, close) => {
+      const name = el('input', { value: p ? p.name : '', placeholder: 'Name' });
+      const ins = el('textarea', { placeholder: 'Instructions Hark should follow in this project (optional)' }); ins.value = p ? p.instructions || '' : '';
+      b.append(el('div', { style: { padding: '0 8px' } }, el('label', { class: 'field' }, el('span', { text: 'Name' }), name), el('label', { class: 'field' }, el('span', { text: 'Instructions' }), ins),
+        el('button', { class: 'btn block', text: 'Save', onclick: () => {
+          if (!name.value.trim()) return H.toast('Give it a name');
+          if (p) { p.name = name.value.trim(); p.instructions = ins.value.trim(); }
+          else { p = { id: H.newId('p'), name: name.value.trim(), instructions: ins.value.trim() }; H.settings.projects.push(p); }
+          H.saveSettings(); close(); newChat(p.id);
+        } })));
+    });
+  }
+
+  // ---------------- boot ----------------
+  ui.mount = function () {
+    skeleton(); setModelBtn(); newChat(); updateSend();
+  };
+})();

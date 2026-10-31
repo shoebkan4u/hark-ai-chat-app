@@ -1,0 +1,9 @@
+{
+  "name": "Hark AI",
+  "short_name": "Hark AI",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#f5f3ee",
+  "theme_color": "#f5f3ee",
+  "icons": [{ "src": "icon.svg", "sizes": "any", "type": "image/svg+xml" }]
+}
