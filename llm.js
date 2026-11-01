@@ -10,7 +10,7 @@
   const PROVIDERS = {
     openrouter: {
       name: 'OpenRouter', base: 'https://openrouter.ai/api/v1', note: 'free models only',
-      headers: { 'HTTP-Referer': 'https://shoebkan4u.github.io/hark-ai-chat-app/', 'X-Title': 'Hark AI' },
+      headers: { 'HTTP-Referer': 'https://shoebkan4u.github.io/hark-ai-chat-app/', 'X-Title': 'Shoeb AI' },
       async models(keyRef) {
         const r = await H.net.request({ url: this.base + '/models', headers: { Authorization: 'Bearer ' + keyRef } });
         if (r.status !== 200) throw new Error('HTTP ' + r.status);

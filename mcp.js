@@ -83,7 +83,7 @@
     let clientId = server.clientId;
     if (!clientId && meta.registration_endpoint) {
       const r = await window.HarkNet.request({ url: meta.registration_endpoint, method: 'POST', headers: { 'Content-Type': 'application/json' }, want: 'text',
-        body: JSON.stringify({ client_name: 'Hark AI', redirect_uris: [REDIRECT, location.origin + location.pathname + '?oauth=1'], grant_types: ['authorization_code', 'refresh_token'], response_types: ['code'], token_endpoint_auth_method: 'none' }) });
+        body: JSON.stringify({ client_name: 'Shoeb AI', redirect_uris: [REDIRECT, location.origin + location.pathname + '?oauth=1'], grant_types: ['authorization_code', 'refresh_token'], response_types: ['code'], token_endpoint_auth_method: 'none' }) });
       if (r.status >= 300) throw new Error('Client registration failed: HTTP ' + r.status + ' ' + (r.text || '').slice(0, 160));
       clientId = JSON.parse(r.text).client_id;
     }

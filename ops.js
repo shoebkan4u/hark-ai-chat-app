@@ -10,7 +10,7 @@
   const esc = H.esc;
   const jparse = (s, d) => { try { return JSON.parse(s); } catch (_) { return d; } };
   const inr = (n) => (n < 0 ? '−' : '') + '₹' + Math.abs(Math.round(+n || 0)).toLocaleString('en-IN');
-  const needApp = () => { if (!O) throw new Error('This needs the Hark AI Android app (v1.1 or newer)'); };
+  const needApp = () => { if (!O) throw new Error('This needs the Shoeb AI Android app (v1.1 or newer)'); };
 
   // ============================================================ SSH
   const ssh = (H.ssh = {
@@ -363,7 +363,7 @@
   const field = (label, input) => el('label', { class: 'field' }, el('span', { text: label }), input);
   const dot = (level) => el('span', { class: 'cdot ' + (level || 'bad') });
   const btn = (text, fn, cls) => el('button', { class: 'btn ' + (cls || 'ghost'), text, onclick: fn });
-  const appOnly = (b) => { if (!O) { b.append(el('div', { class: 'note', text: 'SSH, tunnels and Oracle Cloud work in the Hark AI Android app (v1.1+). In a browser only broker reads over ngrok are available.' })); return true; } return false; };
+  const appOnly = (b) => { if (!O) { b.append(el('div', { class: 'note', text: 'SSH, tunnels and Oracle Cloud work in the Shoeb AI Android app (v1.1+). In a browser only broker reads over ngrok are available.' })); return true; } return false; };
   const ui = (H.opsUI = {});
 
   // ----- Connections -----

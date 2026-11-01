@@ -31,7 +31,7 @@
   H.opsNative = !!O;
   function opsCall(fnName, ...args) {
     return new Promise((resolve, reject) => {
-      if (!O) return reject(new Error('This needs the Hark AI Android app'));
+      if (!O) return reject(new Error('This needs the Shoeb AI Android app'));
       const id = newId(fnName);
       handlers.set(id, (type, data) => {
         handlers.delete(id);

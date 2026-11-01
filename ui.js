@@ -30,7 +30,7 @@
   }
 
   function composer() {
-    const ta = el('textarea', { id: 'input', rows: 1, placeholder: 'Chat with Hark', enterkeyhint: 'send' });
+    const ta = el('textarea', { id: 'input', rows: 1, placeholder: 'Chat with Shoeb AI', enterkeyhint: 'send' });
     ta.addEventListener('input', () => { autosize(ta); updateSend(); });
     ta.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey && !('ontouchstart' in window)) { e.preventDefault(); onSend(); } });
     return el('div', { class: 'composer' },
@@ -418,7 +418,7 @@
     const mem = H.settings.tools.memory ? H.memory.list() : [];
     const proj = S.chat.projectId && H.settings.projects.find((p) => p.id === S.chat.projectId);
     const accs = H.oaAccounts();
-    let s = 'You are Hark AI, Shoeb\'s personal AI assistant in his Android app. Be warm, direct and concise: answer first, then detail only if useful. Use Markdown (short paragraphs, lists, tables when they help). For long code or documents use fenced code blocks with a language tag.\n';
+    let s = 'You are Shoeb AI, Shoeb\'s personal AI assistant in his Android app. Be warm, direct and concise: answer first, then detail only if useful. Use Markdown (short paragraphs, lists, tables when they help). For long code or documents use fenced code blocks with a language tag.\n';
     s += 'Current date and time: ' + H.istNow() + ' (IST, Asia/Kolkata). The user: ' + (H.settings.fullName || 'Shoeb') + ' (call him ' + (H.settings.name || 'Shoeb') + '), in India; amounts in ₹ unless stated.\n';
     s += 'Use tools when they help: web_search for anything current (cite sources as [1], [2] matching the search results order), fetch_url to read a page.';
     if (accs.length) s += ' Broker tools: openalgo_read reads data. ' + accs.map((a) => a.name + ' is ' + (a.mode === 'LIVE' ? 'a LIVE real-money account' : 'a PAPER (analyzer/sandbox) account')).join('; ') + '. openalgo_trade drafts tickets for place, smart, basket, split, modify, cancel, cancel_all, close_all and analyzer toggle. Use it only when the user asks for that action; always name the account and say LIVE or PAPER. The user must tap confirm and pass fingerprint/PIN; you can never confirm for them. Never claim something was sent unless the tool returned status sent_after_user_confirmation, and never retry a declined ticket.';

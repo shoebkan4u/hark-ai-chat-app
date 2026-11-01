@@ -333,7 +333,7 @@
       const a = H.settings.openalgo.find((x) => x.id === e.target.value); const k = a && H.vault.byProvider(a.provider)[0];
       if (N && a && k) { N.setPnlSource(JSON.stringify({ name: a.name, base: a.base, keyId: k.id })); H.toast('P&L widget will refresh every 30 min'); }
     } }, [el('option', { value: '', text: 'None' })].concat(H.settings.openalgo.map((a) => el('option', { value: a.id, text: a.name, selected: H.settings.widgetSource === a.id }))));
-    b.append(el('div', { class: 'note', text: 'Long-press your home screen → Widgets → Hark AI. “Quick ask” opens a new chat or voice mode; “P&L” shows today’s realised + open P&L for the account you pick (read-only).' }),
+    b.append(el('div', { class: 'note', text: 'Long-press your home screen → Widgets → Shoeb AI. “Quick ask” opens a new chat or voice mode; “P&L” shows today’s realised + open P&L for the account you pick (read-only).' }),
       el('div', { class: 'card', style: { padding: '4px 14px 12px' } }, field('P&L widget account', sel)));
   });
 
@@ -352,7 +352,7 @@
   SECTIONS.about = () => screen('About & updates', (b) => {
     const out = el('div', { class: 'note' });
     b.append(el('div', { class: 'card' },
-      row(icon.info, 'Hark AI', 'Web build ' + H.version + (N ? ' · Android app ' + N.version() + ' (' + N.platform() + ')' : ' · browser')),
+      row(icon.info, 'Shoeb AI', 'Web build ' + H.version + (N ? ' · Android app ' + N.version() + ' (' + N.platform() + ')' : ' · browser')),
       row(icon.retry, 'Reload latest interface', 'Fetches the newest web build', () => { if (N) N.reload(); else location.reload(); }),
       row(icon.download, 'Check for a new app version', 'Downloads the newest APK', async () => { out.textContent = 'Checking…'; out.textContent = await H.checkApkUpdate(true); })),
       out,
