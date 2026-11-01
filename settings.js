@@ -354,12 +354,33 @@
     b.append(el('div', { class: 'card' },
       row(icon.info, 'Shoeb AI', 'Web build ' + H.version + (N ? ' · Android app ' + N.version() + ' (' + N.platform() + ')' : ' · browser')),
       row(icon.retry, 'Reload latest interface', 'Fetches the newest web build', () => { if (N) N.reload(); else location.reload(); }),
-      row(icon.download, 'Check for a new app version', 'Downloads the newest APK', async () => { out.textContent = 'Checking…'; out.textContent = await H.checkApkUpdate(true); })),
+      H.nativeUpdater ? null : row(icon.download, 'Check for a new app version', 'Downloads the newest APK', async () => { out.textContent = 'Checking…'; out.textContent = await H.checkApkUpdate(true); })),
       out,
+      H.nativeUpdater ? updaterCard(out) : null,
       el('div', { class: 'note', text: 'Original design and code. The app’s interface follows common chat-app patterns; no third-party proprietary code or assets are included.' }));
   });
 
+  // Native self-updater (app 1.1.5+): checks GitHub on launch, on return to the app and hourly; installs at once.
+  H.nativeUpdater = !!(N && typeof N.updateStatus === 'function');
+  function updaterCard(out) {
+    let st = {}; try { st = JSON.parse(N.updateStatus()); } catch (_) {}
+    const when = st.lastCheck ? new Date(st.lastCheck).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }) : 'not yet';
+    const mode = st.silent ? 'Installs silently (Android 12+, Shoeb AI is its own installer)' : 'Opens the Android install prompt as soon as an update is downloaded';
+    const set = (k, v) => { const o = {}; o[k] = v; N.updateSetPrefs(JSON.stringify(o)); };
+    return el('div', {},
+      sec('App updates from GitHub'),
+      el('div', { class: 'card' },
+        row(icon.download, 'Check for updates', 'Last check ' + when + (st.latest ? ' · latest ' + st.latest : '') + (st.message ? ' · ' + st.message : ''), async () => {
+          out.textContent = 'Checking GitHub…';
+          try { const r = await H.nativeCall('updateCheck'); out.textContent = r.message; } catch (e) { out.textContent = 'Couldn’t check: ' + e.message; }
+        }),
+        row(icon.retry, 'Auto-update', 'Check on launch, on return and every hour; install immediately', null, toggle(st.auto !== false, (v) => set('auto', v))),
+        row(icon.globe, 'Wi-Fi only', 'Only download updates on Wi-Fi', null, toggle(!!st.wifiOnly, (v) => set('wifiOnly', v)))),
+      el('div', { class: 'note', text: mode + '. Every APK is checked against the SHA-256 in apk.json and must be signed with the same key as the installed app, or it is refused.' }));
+  }
+
   H.checkApkUpdate = async function (manual) {
+    if (H.nativeUpdater && !manual) return '';
     try {
       let j = null;
       try { const a = await fetch('apk.json?t=' + Date.now(), { cache: 'no-store' }); if (a.status === 200) { const x = await a.json(); j = { tag_name: x.version, assets: [{ name: 'HarkAI.apk', browser_download_url: new URL(x.url || 'HarkAI.apk', location.href).href }] }; } } catch (_) {}

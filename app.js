@@ -18,6 +18,8 @@
       else { H.ui.newChat(); setTimeout(() => H.$('#input').focus(), 300); }
     } else if (type === 'task_result') {
       try { H.showTaskResult(JSON.parse(d.json)); } catch (_) {}
+    } else if (type === 'updated') {
+      H.toast(d.message || ('Updated to v' + d.version), 4000);
     } else if (type === 'shared_text') {
       H.ui.newChat(); const ta = H.$('#input'); ta.value = d.text; ta.dispatchEvent(new Event('input'));
     }
@@ -36,7 +38,7 @@
   document.addEventListener('visibilitychange', () => { if (!document.hidden && Date.now() - (H.catalog.updated || 0) > TWELVE_H) H.ui.refreshCatalog(false); });
 
   // New Android shell version? (checked once a day)
-  if (H.native) {
+  if (H.native && !(window.HarkNative && typeof window.HarkNative.updateStatus === 'function')) { // older shells only; 1.1.5+ update natively
     const last = +localStorage.getItem('hark.apkcheck') || 0;
     if (Date.now() - last > 864e5) { localStorage.setItem('hark.apkcheck', String(Date.now())); setTimeout(() => H.checkApkUpdate(false), 5000); }
   }

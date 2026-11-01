@@ -1,1 +1,16 @@
-{"version": "1.1.4", "url": "ShoebAI.apk", "built": "1382db9848-4"}
+{
+ "versionCode": 5,
+ "versionName": "1.1.5",
+ "version": "1.1.5",
+ "sha256": "00a73bf7b274d23f566136d72e0122e4b93c7177cd76e923f871d014314bab9f",
+ "size": 6858605,
+ "notes": "Shoeb AI 1.1.5: updates itself from GitHub automatically (checks on launch, on return and hourly; installs straight away)",
+ "built": "549d227eb1-6",
+ "published": "2026-11-01T08:12:35Z",
+ "url": "ShoebAI.apk",
+ "urls": [
+  "https://raw.githubusercontent.com/shoebkan4u/hark-ai-chat-app/main/ShoebAI.apk",
+  "https://shoebkan4u.github.io/hark-ai-chat-app/ShoebAI.apk",
+  "https://github.com/shoebkan4u/hark-ai-chat-app/raw/main/ShoebAI.apk"
+ ]
+}
