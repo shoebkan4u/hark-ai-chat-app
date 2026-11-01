@@ -74,6 +74,11 @@
         navItem(icon.newchat, 'New chat', () => { closeDrawer(); newChat(); }),
         navItem(icon.folder, 'Projects', () => { ui.openProjects(); }),
         navItem(icon.clock, 'Scheduled tasks', () => { closeDrawer(); H.settingsUI.open('tasks'); }),
+        navItem(icon.plug, 'Connections', () => { closeDrawer(); H.opsUI.connections(); }),
+        navItem(icon.chart, 'Trade desk', () => { closeDrawer(); H.opsUI.trade(); }),
+        navItem(icon.code, 'Servers & terminal', () => { closeDrawer(); H.opsUI.servers(); }),
+        navItem(icon.globe, 'Oracle Cloud', () => { closeDrawer(); H.opsUI.oci(); }),
+        navItem(icon.retry, 'Backtest', () => { closeDrawer(); H.opsUI.backtest(); }),
         navItem(icon.brain, 'Memory', () => { closeDrawer(); H.settingsUI.open('memory'); })),
       el('div', { class: 'dr-list', id: 'drList' }),
       el('div', { class: 'dr-foot' },
@@ -278,6 +283,7 @@
     }
     (m.steps || []).forEach((s) => node.append(el('div', { class: 'tool ' + (s.state || '') },
       el('span', { class: 'dot' }), el('span', { class: 'tname', text: s.label }), el('span', { class: 'tsum', text: s.sum || '' }))));
+    (m.charts || []).forEach((c) => { if (H.chartCard) node.append(H.chartCard(c)); });
     if (m.switched) node.append(el('div', { class: 'meta-line', text: 'Switched to ' + H.modelLabel(m.switched.to) + ' (' + m.switched.why.slice(0, 90) + ')' }));
     const content = el('div', { class: 'content' });
     if (m.content) {
@@ -415,8 +421,8 @@
     let s = 'You are Hark AI, Shoeb\'s personal AI assistant in his Android app. Be warm, direct and concise: answer first, then detail only if useful. Use Markdown (short paragraphs, lists, tables when they help). For long code or documents use fenced code blocks with a language tag.\n';
     s += 'Current date and time: ' + H.istNow() + ' (IST, Asia/Kolkata). The user: ' + (H.settings.fullName || 'Shoeb') + ' (call him ' + (H.settings.name || 'Shoeb') + '), in India; amounts in ₹ unless stated.\n';
     s += 'Use tools when they help: web_search for anything current (cite sources as [1], [2] matching the search results order), fetch_url to read a page.';
-    if (accs.length) s += ' Broker tools: openalgo_read is read-only. ' + accs.map((a) => a.name + ' is ' + (a.mode === 'LIVE' ? 'a LIVE real-money account' : 'a PAPER (analyzer) account')).join('; ') + '. You can only prepare an order ticket with openalgo_place_order when the user explicitly asks; the user must confirm on screen. Never claim an order was placed unless the tool returned status placed_after_user_confirmation. You cannot modify, cancel or close orders, or toggle analyzer mode.';
-    s += ' MCP tools from connected servers are available when listed; anything that moves money needs the user\'s on-screen confirmation.';
+    if (accs.length) s += ' Broker tools: openalgo_read reads data. ' + accs.map((a) => a.name + ' is ' + (a.mode === 'LIVE' ? 'a LIVE real-money account' : 'a PAPER (analyzer/sandbox) account')).join('; ') + '. openalgo_trade drafts tickets for place, smart, basket, split, modify, cancel, cancel_all, close_all and analyzer toggle. Use it only when the user asks for that action; always name the account and say LIVE or PAPER. The user must tap confirm and pass fingerprint/PIN; you can never confirm for them. Never claim something was sent unless the tool returned status sent_after_user_confirmation, and never retry a declined ticket.';
+    s += ' Other tools may include backtests (backtest_run, built in; or the runners\' backtest_start/job_status), Oracle Cloud (list, start/stop/reboot/terminate tickets), SSH commands on his servers (ssh_run, ticket + fingerprint), connection checks, and MCP tools from his Hark runners and other servers. Every write goes through a confirmation ticket. Prefer read-only checks first; explain risks before suggesting a LIVE action. Backtest results are not proof of an edge: mention costs and out-of-sample checks.';
     s += '\nNever reveal API keys, passwords or tokens, and never ask the user to paste them into chat (keys go in Settings → Keys).\n';
     if (mem.length) s += '\nThings the user asked you to remember (on-device memory):\n' + mem.map((m) => '- ' + m.text).join('\n') + '\n';
     if (H.settings.tools.memory) s += 'If the user shares a lasting preference or fact, or asks you to remember something, call memory_save.\n';
@@ -481,8 +487,9 @@
           const step = { label: meta.label || c.function.name, sum: meta.sum ? safe(() => meta.sum(args)) : '', state: 'run' };
           am.steps.push(step); paint();
           let result;
-          try { result = await H.runTool(reg, c); step.state = result && (result.error || result.status === 'declined' || result.status === 'blocked') ? 'fail' : 'ok'; }
+          try { result = await H.runTool(reg, c); step.state = result && (result.error || ['declined', 'blocked', 'failed_after_confirmation'].includes(result.status)) ? 'fail' : 'ok'; }
           catch (e) { result = { error: e.message }; step.state = 'fail'; step.sum = (step.sum ? step.sum + ' — ' : '') + e.message; }
+          if (result && result.chart) { (am.charts = am.charts || []).push(result.chart); result = Object.assign({}, result); delete result.chart; }
           if (result && result.sources) result.sources.forEach((s) => { if (s.url && !am.sources.some((x) => x.url === s.url)) am.sources.push(s); });
           const tm = { role: 'tool', tool_call_id: c.id, content: H.clip(result == null ? 'null' : result) };
           convo.push(tm); am.trace.push(tm); paint();
@@ -577,64 +584,74 @@
       const mcpOn = H.settings.mcpServers.filter((s) => s.enabled);
       b.append(
         sw('web', icon.globe, 'Web search', H.vault.has('gemini') ? 'Google Search via Gemini, with sources' : 'Free web search with sources'),
-        sw('openalgo', icon.chart, 'OpenAlgo brokers', accs.length ? accs.map((a) => a.name + (a.mode === 'LIVE' ? ' (LIVE)' : ' (paper)')).join(' · ') + ' · read-only' : 'Import keys to connect TradeSmart and Wisdom'),
+        sw('openalgo', icon.chart, 'OpenAlgo brokers', accs.length ? accs.map((a) => a.name + (a.mode === 'LIVE' ? ' (LIVE)' : ' (paper)')).join(' · ') + ' · tickets need tap + fingerprint' : 'Import keys to connect TradeSmart and Wisdom'),
         sw('mcp', icon.plug, 'MCP servers', mcpOn.length ? mcpOn.map((s) => s.name).join(' · ') : 'None connected yet'),
         sw('memory', icon.brain, 'Memory', H.memory.list().length + ' saved on this phone'),
+        sw('ops', icon.shield, 'Servers & cloud', H.opsNative ? 'SSH, Oracle Cloud, backtests · writes need tap + fingerprint' : 'Android app only'),
         el('button', { class: 'opt', html: icon.gear, onclick: () => H.settingsUI.open('brokers') }, el('span', { class: 't', text: 'Manage brokers and MCP servers' })));
     });
   }
 
   // ---------------- confirmations ----------------
-  ui.confirmOrder = function (o, acc) {
+  /**
+   * Full-screen ticket for any write action. Nothing runs until the user taps the button; run()
+   * then asks the phone for fingerprint/PIN bound to the exact request (native WriteGuard).
+   * Resolves {confirmed, result, error}.
+   */
+  ui.ticket = function (o) {
     return new Promise((resolve) => {
-      const live = acc.mode === 'LIVE';
       let close; let done = false;
       const finish = (v) => { if (done) return; done = true; close(); resolve(v); };
-      const cell = (k, v, cls) => el('div', { class: 'cell ' + (cls || '') }, el('small', { text: k }), el('b', { text: v }));
-      const go = el('button', { class: 'go' + (live ? '' : ' paper'), text: (live ? 'Place LIVE order' : 'Place paper order') });
-      go.onclick = async () => {
+      const badgeCls = { LIVE: 'live', PAPER: 'paper', ACTION: 'action', DANGER: 'live' }[o.badge] || 'action';
+      const cell = (k, v, cls) => el('div', { class: 'cell ' + (cls || '') }, el('small', { text: k }), el('b', { text: String(v) }));
+      const go = el('button', { class: 'go' + (o.badge === 'PAPER' ? ' paper' : ''), text: o.goText || 'Confirm' });
+      const status = el('div', { class: 'note', style: { minHeight: '18px', marginTop: '8px' } });
+      let typed = null;
+      if (o.typeToConfirm) {
+        typed = el('input', { placeholder: 'Type ' + o.typeToConfirm + ' to enable', autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false', class: 'typeconfirm' });
         go.disabled = true;
-        if (N && H.settings.requireBiometricForOrders && N.biometricAvailable()) {
-          const r = await H.nativeCall('biometric', 'Confirm ' + o.action + ' ' + o.quantity + ' ' + o.symbol, acc.name + (live ? ' · LIVE money' : ' · paper'));
-          if (!r || !r.ok) { go.disabled = false; H.toast('Not confirmed'); return; }
+        typed.oninput = () => { go.disabled = typed.value.trim() !== o.typeToConfirm; };
+      }
+      go.onclick = async () => {
+        if (typed && typed.value.trim() !== o.typeToConfirm) return;
+        go.disabled = true; status.textContent = H.opsNative || N ? 'Confirm with fingerprint/PIN…' : 'Sending…';
+        try {
+          const result = await o.run();
+          finish({ confirmed: true, result });
+        } catch (e) {
+          if (e.notApproved) { go.disabled = false; status.textContent = 'Not confirmed. Nothing was sent.'; return; }
+          status.textContent = 'Failed: ' + e.message;
+          finish({ confirmed: true, error: e.message });
         }
-        finish(true);
       };
       const v = el('div', { class: 'order' },
-        el('div', { class: 'top' }, el('span', { class: 'modebadge ' + (live ? 'live' : 'paper'), text: live ? 'LIVE' : 'PAPER' }), el('span', { style: { color: 'var(--muted)' }, text: acc.name + ' · OpenAlgo' })),
-        el('h2', { text: (o.action === 'BUY' ? 'Buy ' : 'Sell ') + o.symbol }),
-        el('div', { class: 'note', text: 'Hark prepared this order. Nothing is sent unless you confirm.' }),
-        el('div', { class: 'grid' },
-          cell('Side', o.action, o.action === 'BUY' ? 'side-buy' : 'side-sell'), cell('Quantity', o.quantity),
-          cell('Symbol', o.symbol), cell('Exchange', o.exchange), cell('Product', o.product), cell('Price type', o.pricetype),
-          cell('Price', o.pricetype === 'MARKET' ? 'Market' : '₹' + o.price), cell('Trigger', +o.trigger_price ? '₹' + o.trigger_price : '—')),
-        el('div', { class: 'warn', text: live ? 'This is your LIVE TradeSmart account: real money. Check every field.' : 'This goes to the paper (analyzer) account. No real money.' }),
-        el('div', { class: 'foot' }, go, el('button', { class: 'btn ghost block', text: 'Cancel', onclick: () => finish(false) })));
-      close = pushOverlay(v, () => { if (!done) { done = true; resolve(false); } });
+        el('div', { class: 'top' }, el('span', { class: 'modebadge ' + badgeCls, text: o.badge || 'ACTION' }), el('span', { style: { color: 'var(--muted)' }, text: o.source || '' })),
+        el('h2', { text: o.headline || 'Confirm' }),
+        el('div', { class: 'note', text: o.note || 'Hark prepared this. Nothing is sent unless you confirm here and on the fingerprint/PIN prompt.' }),
+        o.cells && o.cells.length ? el('div', { class: 'grid' }, o.cells.map((c) => cell(c[0], c[1], c[2]))) : null,
+        o.lines && o.lines.length ? el('div', { class: 'tlines' }, o.lines.map((l) => el('div', { class: 'tline', text: l }))) : null,
+        o.code ? el('pre', { class: 'tcode', text: o.code }) : null,
+        o.warn ? el('div', { class: 'warn' + (o.badge === 'PAPER' ? ' calm' : ''), text: o.warn }) : null,
+        typed,
+        el('div', { class: 'foot' }, go, el('button', { class: 'btn ghost block', text: 'Cancel', onclick: () => finish({ confirmed: false }) }), status));
+      close = pushOverlay(v, () => { if (!done) { done = true; resolve({ confirmed: false }); } });
       if (S.voice) S.voice.pause && S.voice.pause();
     });
   };
-  ui.confirmAction = function ({ title, server, tool, args }) {
-    return new Promise((resolve) => {
-      let close; let done = false;
-      const finish = (v) => { if (done) return; done = true; close(); resolve(v); };
-      const go = el('button', { class: 'go', text: 'Confirm' });
-      go.onclick = async () => {
-        go.disabled = true;
-        if (N && H.settings.requireBiometricForOrders && N.biometricAvailable()) {
-          const r = await H.nativeCall('biometric', 'Confirm ' + (tool.title || tool.name), server.name);
-          if (!r || !r.ok) { go.disabled = false; return; }
-        }
-        finish(true);
-      };
-      const v = el('div', { class: 'order' },
-        el('div', { class: 'top' }, el('span', { class: 'modebadge live', text: 'ACTION' }), el('span', { style: { color: 'var(--muted)' }, text: server.name + ' · MCP' })),
-        el('h2', { text: title }),
-        el('div', { class: 'note', text: tool.description ? tool.description.slice(0, 300) : '' }),
-        el('pre', { style: { background: 'var(--card)', border: '1px solid var(--line)', borderRadius: '14px', padding: '12px', overflow: 'auto', fontSize: '13px', marginTop: '14px' }, text: JSON.stringify(args, null, 2) }),
-        el('div', { class: 'warn', text: 'This tool can change things in your account (orders or money). It runs only if you confirm.' }),
-        el('div', { class: 'foot' }, go, el('button', { class: 'btn ghost block', text: 'Cancel', onclick: () => finish(false) })));
-      close = pushOverlay(v, () => { if (!done) { done = true; resolve(false); } });
+  // v1.0 compatibility: a plain order ticket.
+  ui.confirmOrder = async function (order, acc, run) {
+    const r = await ui.ticket({ badge: acc.mode === 'LIVE' ? 'LIVE' : 'PAPER', source: acc.name + ' · OpenAlgo', headline: (order.action === 'BUY' ? 'Buy ' : 'Sell ') + order.symbol,
+      cells: [['Side', order.action], ['Quantity', order.quantity], ['Symbol', order.symbol], ['Exchange', order.exchange]], run: run || (async () => true) });
+    return r.confirmed && !r.error;
+  };
+  ui.confirmAction = function ({ title, server, tool, args, run }) {
+    const live = String((args && args.mode) || '').toLowerCase() === 'live' || /tradesmart/i.test(server.name) && /live/i.test(tool.name);
+    const paper = !live && /paper|wisdom/i.test(server.name + ' ' + ((args && args.mode) || ''));
+    return ui.ticket({
+      badge: live ? 'LIVE' : paper ? 'PAPER' : 'ACTION', source: server.name + ' · MCP', headline: title,
+      note: tool.description ? tool.description.slice(0, 300) : '', code: JSON.stringify(args, null, 2),
+      warn: live ? 'LIVE: this can place a real-money order.' : 'This tool can change things in your account. It runs only if you confirm.',
+      goText: live ? 'Run LIVE' : 'Run', run: run || (async () => true),
     });
   };
 

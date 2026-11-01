@@ -26,6 +26,8 @@
     ['nvidia', 'NVIDIA', 'integrate.api.nvidia.com'], ['gemini', 'Gemini', 'generativelanguage.googleapis.com'], ['xai', 'xAI (Grok)', 'api.x.ai'],
     ['huggingface', 'Hugging Face', 'huggingface.co'], ['custom', 'Custom / OpenClaw gateway', ''],
     ['openalgo:tradesmart', 'OpenAlgo TradeSmart', ''], ['openalgo:wisdom', 'OpenAlgo Wisdom', ''],
+    ['runner:tradesmart', 'Hark runner · TradeSmart', 'runner-tradesmart.hark.local'], ['runner:wisdom', 'Hark runner · Wisdom', 'runner-wisdom.hark.local'],
+    ['ssh', 'SSH keys (app only)', ''], ['ssh-pass', 'SSH key passphrases (app only)', ''], ['oci', 'Oracle Cloud API key (app only)', ''],
   ];
 
   const open = (section) => {
@@ -75,11 +77,12 @@
       b.append(sec('Empty slots to fill'), el('div', { class: 'card' }, slots.map((s) => row(icon.plus, s.label.replace(/\s+/g, ' ').trim(), 'Tap to paste', () => addKey(redraw, s)))));
     }
     b.append(el('div', { class: 'btns' }, el('button', { class: 'btn', text: 'Add a key', onclick: () => addKey(redraw) }),
+      el('button', { class: 'btn ghost', text: 'SSH keys & servers', onclick: () => H.opsUI.servers() }),
       el('button', { class: 'btn ghost', text: 'Reset rate-limit pauses', onclick: () => { H.clearExhausted(); redraw(); H.toast('All keys active again'); } })));
   });
   function addKey(done, slot) {
     H.ui.sheet('Add a key', (b, close) => {
-      const sel = el('select', null, PROVIDER_CHOICES.map(([id, n]) => el('option', { value: id, text: n })));
+      const sel = el('select', null, PROVIDER_CHOICES.filter(([id]) => !['ssh', 'ssh-pass', 'oci'].includes(id)).map(([id, n]) => el('option', { value: id, text: n })));
       if (slot) sel.value = slot.provider;
       const label = el('input', { placeholder: 'Label', value: slot ? slot.label.replace(/\s+/g, ' ').trim() : '' });
       const host = el('input', { placeholder: 'Host (for OpenAlgo/custom), e.g. my-server.ngrok-free.dev' });
@@ -88,7 +91,7 @@
       const sync = () => {
         const p = sel.value; const c = PROVIDER_CHOICES.find((x) => x[0] === p);
         const acc = H.settings.openalgo.find((a) => a.provider === p);
-        host.value = c[2] || (acc ? new URL(acc.base).host : p === 'custom' && H.settings.custom.base ? new URL(H.settings.custom.base).host : host.value);
+        host.value = c[2] || (acc && acc.base ? new URL(acc.base).host : p === 'custom' && H.settings.custom.base ? new URL(H.settings.custom.base).host : host.value);
         if (!slot) { const n = H.vault.byProvider(p).length + 1; label.value = c[1] + (p.startsWith('openalgo') ? ' API key' : ' key ' + n); order.value = n; }
       };
       sel.onchange = sync; sync();
@@ -118,12 +121,25 @@
         pass.value = '';
         (r.openalgo || []).forEach((o) => {
           const acc = H.settings.openalgo.find((a) => a.id === o.id);
-          if (acc) { acc.base = o.base; acc.mode = /LIVE/i.test(o.mode) ? 'LIVE' : 'PAPER'; }
+          if (!acc) return;
+          // SSH tunnels need the Android app; a browser keeps using the ngrok address.
+          const tunnel = /\.hark\.local/.test(o.base || '');
+          acc.base = tunnel && (r.browserOnly || !H.opsNative) ? (o.fallbackBase || acc.base) : o.base;
+          acc.fallbackBase = o.fallbackBase || '';
+          acc.mode = /LIVE/i.test(o.mode) ? 'LIVE' : 'PAPER';
         });
+        (r.runners || []).forEach((x) => {
+          if (!x.tokenRef) return;
+          const cur = H.settings.mcpServers.find((m) => m.id === x.id);
+          const srv = { id: x.id, name: x.name, url: x.url, enabled: true, readOnly: false, trading: true, runner: true, account: x.account, tokenRef: x.tokenRef };
+          if (cur) Object.assign(cur, srv, { sessionId: null }); else H.settings.mcpServers.unshift(srv);
+        });
+        H.settings.tools.ops = true;
         if (r.knowledge) H.settings.knowledge = r.knowledge;
         H.settings.slots = r.slots || [];
         H.saveSettings();
-        status.textContent = 'Imported ' + r.imported + ' keys' + (r.knowledge ? ' and your background notes' : '') + '. ' + (r.slots && r.slots.length ? r.slots.length + ' empty slots are listed under Keys.' : '');
+        status.textContent = 'Imported ' + r.imported + ' keys' + (r.knowledge ? ' and your background notes' : '') + '. ' + ((r.vms || []).length ? r.vms.length + ' server(s), ' + (r.tunnels || []).length + ' SSH tunnels' + (r.oci && r.oci.configured ? ', Oracle Cloud' : '') + '. ' : '') + (r.slots && r.slots.length ? r.slots.length + ' empty slots are listed under Keys.' : '');
+        if ((r.vms || []).length) setTimeout(() => H.opsUI.connections(), 600);
         H.toast('Import complete');
         H.ui.refreshCatalog(true);
       } catch (e) { status.textContent = 'Import failed: ' + e.message; }
@@ -150,9 +166,9 @@
 
   // ---------------- brokers ----------------
   SECTIONS.brokers = () => screen('Brokers & MCP', (b, redraw) => {
-    b.append(el('div', { class: 'note', text: 'Hark reads funds, positions, holdings, orders, trades, P&L, quotes and history. The only action it can take is an order ticket you confirm full-screen. It cannot modify, cancel or close orders, or change analyzer mode.' }));
+    b.append(el('div', { class: 'note', text: 'Hark reads funds, positions, holdings, orders, trades, P&L, quotes and history, and can draft any trading action: place, smart, basket, split, modify, cancel, cancel all, close all and analyzer toggle. Each one opens a full-screen ticket labelled LIVE or PAPER and is sent only after your tap plus fingerprint/PIN. Nothing is ever sent by the AI on its own.' }));
     H.settings.openalgo.forEach((a) => {
-      const k = H.vault.byProvider(a.provider)[0];
+      const k = H.vault.byProvider(a.provider).find((x) => a.base && x.host === new URL(a.base).host) || H.vault.byProvider(a.provider)[0];
       const baseIn = el('input', { value: a.base });
       baseIn.onchange = () => { a.base = baseIn.value.trim().replace(/\/+$/, ''); H.saveSettings(); };
       const test = el('button', { class: 'btn ghost', text: 'Test connection' });
@@ -160,24 +176,26 @@
       test.onclick = async () => {
         test.disabled = true; out.textContent = 'Checking…';
         try {
-          const f = await H.oaCall(a, 'funds'); const an = await H.oaCall(a, 'analyzer').catch(() => null);
+          const f = await H.oaCall(a, 'funds'); const an = await H.oaAnalyzer(a);
           const d = f.data || {};
-          out.textContent = 'OK · cash ₹' + Math.round(+d.availablecash || 0).toLocaleString('en-IN') + ' · analyzer ' + (an && an.data ? (an.data.analyze_mode ? 'ON (paper)' : 'OFF (live)') : 'unknown');
+          out.textContent = 'OK · cash ₹' + Math.round(+d.availablecash || 0).toLocaleString('en-IN') + ' · analyzer ' + (an == null ? 'unknown' : an ? 'ON (paper)' : 'OFF (live)');
         } catch (e) { out.textContent = 'Failed: ' + e.message; }
         test.disabled = false;
       };
+      const tunnel = /\.hark\.local/.test(a.base || '');
+      const swap = a.fallbackBase ? el('button', { class: 'btn ghost', text: tunnel ? 'Use ngrok instead' : 'Use SSH tunnel', onclick: () => {
+        const t = tunnel ? a.fallbackBase : 'http://oa-' + a.id + '.hark.local';
+        if (!tunnel) a.fallbackBase = a.base;
+        a.base = t; H.saveSettings(); redraw();
+      } }) : null;
       b.append(sec(a.name), el('div', { class: 'card', style: { padding: '4px 14px 12px' } },
         el('div', { style: { margin: '10px 0' }, html: '<span class="badge ' + (a.mode === 'LIVE' ? 'live' : 'paper') + '" style="margin:0">' + (a.mode === 'LIVE' ? 'LIVE' : 'PAPER') + '</span> <span class="note">' + (k ? 'Key: ' + H.esc(k.label) + ' (' + H.esc(k.preview) + ')' : 'No key yet — import or add one') + '</span>' }),
-        field('OpenAlgo address', baseIn),
-        el('div', { class: 'row', style: { padding: '10px 0', border: 0 } }, el('span', { class: 't', html: '<b>Allow order tickets</b><small>' + (a.mode === 'LIVE' ? 'LIVE money. Every order still needs your tap' + (N ? ' and fingerprint/PIN' : '') : 'Paper only; refused unless analyzer mode is on') + '</small>' }),
-          toggle(a.orderTickets, async (v, inp) => {
-            if (v && a.mode === 'LIVE') { const ok = await H.ui.modal('Allow LIVE order tickets?', 'The AI will be able to <b>prepare</b> orders on your real TradeSmart account. Nothing is sent until you confirm on a full-screen ticket.', [['Cancel', false, 'ghost'], ['Allow', true, 'danger']]); if (!ok) { inp.checked = false; return; } }
-            a.orderTickets = v; H.saveSettings();
-          })),
-        el('div', { class: 'btns' }, test), out));
+        field('OpenAlgo address' + (tunnel ? ' (SSH tunnel to hark-a1)' : ''), baseIn),
+        el('div', { class: 'note', text: a.mode === 'LIVE' ? 'LIVE money. Every write needs your tap + fingerprint/PIN.' : 'Paper. Orders are refused unless analyzer (paper) mode is on.' }),
+        el('div', { class: 'btns' }, test, swap, el('button', { class: 'btn ghost', text: 'Trade desk', onclick: () => H.opsUI.trade(a.id) })), out));
     });
-    b.append(sec('Order safety'), el('div', { class: 'card' }, row(icon.shield, 'Fingerprint/PIN for every order', N ? 'Uses the phone lock' : 'Android app only', null, toggle(H.settings.requireBiometricForOrders, (v) => { H.settings.requireBiometricForOrders = v; H.saveSettings(); }))));
-    b.append(el('div', { class: 'btns' }, el('button', { class: 'btn ghost', text: 'MCP servers', onclick: SECTIONS.mcp })));
+    b.append(sec('Order safety'), el('div', { class: 'card' }, row(icon.shield, 'Fingerprint/PIN for every write', N ? 'Always on. Enforced by the phone for the exact request.' : 'Android app only; the browser asks for a confirm instead', null)));
+    b.append(el('div', { class: 'btns' }, el('button', { class: 'btn ghost', text: 'MCP servers', onclick: SECTIONS.mcp }), el('button', { class: 'btn ghost', text: 'Connections', onclick: () => H.opsUI.connections() })));
   });
 
   // ---------------- MCP ----------------
@@ -200,7 +218,7 @@
         connect.disabled = false;
       };
       b.append(sec(s.name), el('div', { class: 'card', style: { padding: '4px 14px 12px' } },
-        el('div', { class: 'note', text: s.url }),
+        el('div', { class: 'note', text: s.url + (s.runner ? ' · via SSH tunnel, token in the vault · write tools need tap + fingerprint' : '') }),
         el('div', { class: 'row', style: { padding: '8px 0', border: 0 } }, el('span', { class: 't', html: '<b>Enabled in chat</b>' }), toggle(s.enabled, (v) => { s.enabled = v; H.saveSettings(); })),
         el('div', { class: 'row', style: { padding: '8px 0', border: 0 } }, el('span', { class: 't', html: '<b>Read-only</b><small>Hide tools that can place/modify/cancel orders or move money</small>' }),
           toggle(s.readOnly, async (v, inp) => {
@@ -323,7 +341,8 @@
     b.append(el('div', { class: 'content', style: { lineHeight: 1.6, fontSize: '15px' }, html: DOMPurify.sanitize(marked.parse([
       '**Keys** live in an encrypted vault backed by Android Keystore. The web code that draws this app only handles placeholders; the phone inserts a key only into requests to the address that key was saved for, and blanks it out of any response.',
       '**Moving a key** to a new address (for example a new ngrok URL) needs your OK in a native Android dialog.',
-      '**Orders**: the AI can only prepare an order ticket. A full-screen ticket shows broker, LIVE/PAPER, symbol, side, quantity, product and price; it is sent only when you tap confirm' + (N ? ' and pass fingerprint/PIN' : '') + '. Wisdom orders are refused unless analyzer (paper) mode is on. There is no modify, cancel, close or analyzer toggle.',
+      '**Trading**: the AI can draft any action (place, smart, basket, split, modify, cancel, cancel all, close all, analyzer toggle), but only as a full-screen ticket labelled LIVE (TradeSmart) or PAPER (Wisdom). It is sent only after you tap confirm' + (N ? ' and pass the phone\'s fingerprint/PIN prompt, which is tied to that exact request and enforced by native code' : '') + '. Wisdom orders are refused unless analyzer (paper) mode is on.',
+      '**Servers**: SSH keys, the Oracle Cloud key and runner tokens stay inside the app. Host keys are pinned. Loopback services on your VM are reached through SSH tunnels; no port is opened. Commands, VM start/stop/reboot and terminate (which also needs the name typed) each need a ticket plus fingerprint/PIN.',
       '**Chats** are stored on this phone (app storage). **Memory** is encrypted on this phone. Nothing is sent anywhere except to the model provider you chose and the tools you enabled.',
       '**Updates**: the app loads its interface from GitHub Pages, so improvements arrive without reinstalling. Keys are never part of the app or the repositories.',
     ].join('\n\n'))) }));
@@ -335,16 +354,21 @@
     b.append(el('div', { class: 'card' },
       row(icon.info, 'Hark AI', 'Web build ' + H.version + (N ? ' · Android app ' + N.version() + ' (' + N.platform() + ')' : ' · browser')),
       row(icon.retry, 'Reload latest interface', 'Fetches the newest web build', () => { if (N) N.reload(); else location.reload(); }),
-      row(icon.download, 'Check for a new app version', 'Downloads come from GitHub Releases', async () => { out.textContent = 'Checking…'; out.textContent = await H.checkApkUpdate(true); })),
+      row(icon.download, 'Check for a new app version', 'Downloads the newest APK', async () => { out.textContent = 'Checking…'; out.textContent = await H.checkApkUpdate(true); })),
       out,
       el('div', { class: 'note', text: 'Original design and code. The app’s interface follows common chat-app patterns; no third-party proprietary code or assets are included.' }));
   });
 
   H.checkApkUpdate = async function (manual) {
     try {
-      const r = await fetch('https://api.github.com/repos/' + PUBLIC_REPO + '/releases/latest', { cache: 'no-store' });
-      if (r.status !== 200) return 'No releases found';
-      const j = await r.json(); const latest = (j.tag_name || '').replace(/^v/, '');
+      let j = null;
+      try { const a = await fetch('apk.json?t=' + Date.now(), { cache: 'no-store' }); if (a.status === 200) { const x = await a.json(); j = { tag_name: x.version, assets: [{ name: 'HarkAI.apk', browser_download_url: new URL(x.url || 'HarkAI.apk', location.href).href }] }; } } catch (_) {}
+      if (!j) {
+        const r = await fetch('https://api.github.com/repos/' + PUBLIC_REPO + '/releases/latest', { cache: 'no-store' });
+        if (r.status !== 200) return 'No releases found';
+        j = await r.json();
+      }
+      const latest = (j.tag_name || '').replace(/^v/, '');
       const cur = N ? N.version() : null;
       const newer = cur && latest && latest.split('.').map(Number).some((x, i, a) => { const c = cur.split('.').map(Number); for (let k = 0; k < a.length; k++) { if ((a[k] || 0) !== (c[k] || 0)) return (a[k] || 0) > (c[k] || 0); } return false; });
       const asset = (j.assets || []).find((a) => /\.apk$/.test(a.name));

@@ -29,7 +29,7 @@
     window.HARK_REMOTE_VERSION = v;
     var q = '?v=' + encodeURIComponent(v);
     add('link', { rel: 'stylesheet', href: 'style.css' + q });
-    var files = ['core.js', 'llm.js', 'mcp.js', 'tools.js', 'ui.js', 'settings.js', 'app.js'], i = 0;
+    var files = ['core.js', 'llm.js', 'mcp.js', 'tools.js', 'ui.js', 'settings.js', 'ops.js', 'app.js'], i = 0;
     (function next() { if (i >= files.length) return; var s = add('script', { src: files[i++] + q }); s.onload = next; s.onerror = next; })();
   }
   fetch('version.json?t=' + Date.now(), { cache: 'no-store' })

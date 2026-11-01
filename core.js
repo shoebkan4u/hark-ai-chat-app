@@ -26,6 +26,44 @@
     });
   }
   H.nativeCall = nativeCall;
+  // Server/cloud operations live on a second native object (window.HarkOps).
+  const O = window.HarkOps || null;
+  H.opsNative = !!O;
+  function opsCall(fnName, ...args) {
+    return new Promise((resolve, reject) => {
+      if (!O) return reject(new Error('This needs the Hark AI Android app'));
+      const id = newId(fnName);
+      handlers.set(id, (type, data) => {
+        handlers.delete(id);
+        if (type === 'err') { const e = new Error((data && data.message) || 'Native error'); if (data && data.hostKey) { e.hostKey = data.hostKey; e.keyType = data.keyType; } reject(e); }
+        else resolve(data);
+      });
+      try { O[fnName](id, ...args); } catch (e) { handlers.delete(id); reject(e); }
+    });
+  }
+  H.opsCall = opsCall;
+  H.O = O;
+  /** Exact request key the native WriteGuard hashes: "METHOD url\nbody". */
+  H.reqKey = (method, url, body) => String(method || 'GET').toUpperCase() + ' ' + url + '\n' + (body == null ? '' : body);
+  /**
+   * Ask for a native biometric/PIN approval of exact requests. Resolves to tokens; throws
+   * (e.notApproved) if the user cancels. In a plain browser it falls back to confirm().
+   */
+  H.approve = async function (title, keys) {
+    if (O) {
+      const r = await opsCall('approveWrite', title, JSON.stringify(keys));
+      if (!r || !r.ok) { const e = new Error('Not confirmed'); e.notApproved = true; throw e; }
+      return r.tokens;
+    }
+    // Older Android shell (v1.0) without native approvals: still require fingerprint/PIN.
+    if (N && N.biometric && N.biometricAvailable && N.biometricAvailable()) {
+      const r = await nativeCall('biometric', title, keys.map((k) => k.split('\n')[0].replace(/^\w+ /, '')).join(' · ').slice(0, 120));
+      if (!r || !r.ok) { const e = new Error('Not confirmed'); e.notApproved = true; throw e; }
+      return keys.map(() => 'shell-v1');
+    }
+    if (!window.confirm(title + '\n\n' + keys.map((k) => k.split('\n')[0]).join('\n'))) { const e = new Error('Not confirmed'); e.notApproved = true; throw e; }
+    return keys.map(() => 'browser');
+  };
   H.nativeCallRaw = (id, fn) => handlers.set(id, fn);
   H.nativeDone = (id) => handlers.delete(id);
 
@@ -104,10 +142,11 @@
       const secrets = [];
       for (const s of bundle.secrets || []) {
         if (!s.value) continue;
+        if (['ssh_key', 'ssh_pass', 'oci_key'].includes(s.type) || /\.hark\.local$/.test(s.host || '')) continue; // app-only (SSH/OCI), never kept in a browser
         const id = this.put({ label: String(s.label).replace(/\s+/g, ' ').trim(), provider: s.provider, host: s.host, order: s.order || 1, type: s.type }, s.value);
         secrets.push({ id, label: s.label, provider: s.provider });
       }
-      return { imported: secrets.length, secrets, slots: bundle.slots || [], openalgo: bundle.openalgo || [], knowledge: bundle.knowledge || '', created: bundle.created };
+      return { imported: secrets.length, secrets, slots: bundle.slots || [], openalgo: bundle.openalgo || [], knowledge: bundle.knowledge || '', created: bundle.created, payload: bundle.format, runners: [], vms: [], tunnels: [], oci: {}, browserOnly: true };
     },
   };
 
@@ -135,8 +174,12 @@
       if (id === 'native') nativeListeners.forEach((fn) => { try { fn(type, data); } catch (e) { console.error(e); } });
     },
     /** Buffered request. Resolves {status, headers, text, json()} */
-    request(opts) {
+    async request(opts) {
       const o = Object.assign({ method: 'GET', headers: {} }, opts);
+      if (o.approval) {
+        const [tok] = await H.approve(o.approval, [H.reqKey(o.method, o.url, o.body)]);
+        o.headers = Object.assign({}, o.headers, { 'X-Hark-Approval': tok });
+      }
       if (N) {
         return new Promise((resolve, reject) => {
           const id = newId('h');
@@ -212,18 +255,18 @@
   // ---------------- settings ----------------
   const DEFAULT_SETTINGS = {
     name: 'Shoeb', fullName: 'Shoeb Khan', theme: 'system', model: 'groq:openai/gpt-oss-120b',
-    autoFallback: true, tools: { web: true, openalgo: true, mcp: true, memory: true },
+    autoFallback: true, tools: { web: true, openalgo: true, mcp: true, memory: true, ops: true },
     voice: { autoSpeak: false, rate: 1.0, lang: 'en-IN' },
     openalgo: [
-      { id: 'tradesmart', name: 'TradeSmart', base: '', mode: 'LIVE', provider: 'openalgo:tradesmart', orderTickets: false },
-      { id: 'wisdom', name: 'Wisdom', base: '', mode: 'PAPER', provider: 'openalgo:wisdom', orderTickets: false },
+      { id: 'tradesmart', name: 'TradeSmart', base: '', mode: 'LIVE', provider: 'openalgo:tradesmart' },
+      { id: 'wisdom', name: 'Wisdom', base: '', mode: 'PAPER', provider: 'openalgo:wisdom' },
     ],
     mcpServers: [
       { id: 'kite', name: 'Zerodha Kite', url: 'https://mcp.kite.trade/mcp', enabled: false, readOnly: true, trading: true },
       { id: 'dhan', name: 'Dhan', url: 'https://mcp.dhan.co/mcp', enabled: false, readOnly: true, trading: true },
     ],
     custom: { base: '', name: 'Custom (OpenAI-compatible)' },
-    projects: [], tasks: [], knowledge: '', requireBiometricForOrders: true, widgetSource: '',
+    projects: [], tasks: [], knowledge: '', requireBiometricForOrders: true, widgetSource: '', lastConnections: null,
   };
   function deepMerge(a, b) {
     const o = Array.isArray(a) ? a.slice() : Object.assign({}, a);

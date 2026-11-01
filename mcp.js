@@ -30,13 +30,13 @@
       if (this.s.headers) Object.assign(h, this.s.headers);
       return h;
     }
-    async rpc(method, params, isNotification) {
+    async rpc(method, params, isNotification, opts) {
       const body = { jsonrpc: '2.0', method };
       if (params !== undefined) body.params = params;
       if (!isNotification) body.id = this.nextId++;
       const headers = Object.assign({ 'Content-Type': 'application/json', 'Accept': 'application/json, text/event-stream', 'MCP-Protocol-Version': MCP_PROTOCOL }, this.authHeaders());
       if (this.sessionId) headers['Mcp-Session-Id'] = this.sessionId;
-      const res = await window.HarkNet.request({ url: this.s.url, method: 'POST', headers, body: JSON.stringify(body), want: 'text' });
+      const res = await window.HarkNet.request(Object.assign({ url: this.s.url, method: 'POST', headers, body: JSON.stringify(body), want: 'text' }, opts || {}));
       if (res.headers && (res.headers['mcp-session-id'] || res.headers['Mcp-Session-Id'])) this.sessionId = res.headers['mcp-session-id'] || res.headers['Mcp-Session-Id'];
       if (res.status === 401) { const e = new Error('auth_required'); e.auth = true; e.wwwAuth = res.headers && (res.headers['www-authenticate'] || ''); throw e; }
       if (res.status === 404 && this.sessionId) { this.sessionId = null; }
@@ -52,15 +52,15 @@
       return msg.result;
     }
     async connect() {
-      await this.rpc('initialize', { protocolVersion: MCP_PROTOCOL, capabilities: {}, clientInfo: { name: 'hark-ai', version: '1.0' } });
+      await this.rpc('initialize', { protocolVersion: MCP_PROTOCOL, capabilities: {}, clientInfo: { name: 'hark-ai', version: '1.1' } });
       try { await this.rpc('notifications/initialized', undefined, true); } catch (_) {}
       const r = await this.rpc('tools/list', {});
       this.tools = (r.tools || []).map(t => Object.assign({}, t, { _write: isWriteTool(t) }));
       return this.tools;
     }
-    async call(name, args) {
+    async call(name, args, opts) {
       if (!this.tools) await this.connect();
-      return this.rpc('tools/call', { name, arguments: args || {} });
+      return this.rpc('tools/call', { name, arguments: args || {} }, false, opts);
     }
   }
 
