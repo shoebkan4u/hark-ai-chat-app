@@ -1,6 +1,6 @@
 /* Hark AI — operations: SSH keys/servers/terminal, connections, Oracle Cloud, trade desk, backtests.
    Secrets never enter this file: SSH keys, OCI keys and tokens are used inside the Android app
-   (window.HarkOps). Every write goes through a full-screen ticket + native fingerprint/PIN. */
+   (window.HarkOps). SSH commands run directly (1.1.8); trading and Oracle Cloud writes keep a tap ticket. No fingerprint/PIN. */
 (function () {
   'use strict';
   const H = window.Hark;
@@ -32,8 +32,8 @@
     delVm(id) { needApp(); return H.opsCall('vmDelete', id); },
     saveTunnel(t) { needApp(); return H.opsCall('tunnelSave', JSON.stringify(t)); },
     test(vmId, keyId) { needApp(); return H.opsCall('sshTest', vmId, keyId || ''); },
-    /** Run a command. Returns {code, output}. onOut gets streamed text. With direct, no approval is asked:
-        the app itself decides (read-only commands, or changes when Safety › Ask is off and the command isn't protected). */
+    /** Run a command. Returns {code, output}. onOut gets streamed text. With direct, no token is fetched: the app runs it
+        when Safety › Ask is off (the default) or the command is read-only. Otherwise a one-time token is fetched first. */
     async exec(vmId, command, onOut, timeoutSec, direct) {
       needApp();
       let tok = '';
@@ -60,47 +60,44 @@
     },
     setAskChanges(on) { needApp(); return H.opsCall('sshSetAskChanges', !!on); },
   });
-  // Ticket for a command (used by the chat tool and the Run screen).
-  const RISKY = /\b(rm|reboot|shutdown|poweroff|halt|mkfs|dd|kill|pkill|systemctl\s+(stop|restart|disable|mask)|docker\s+(rm|stop|restart|kill|compose\s+down)|iptables|ufw|chmod|chown|mv|truncate|crontab|apt|pip|npm|sed\s+-i|tee|>)/;
   const sshCard = (vm, command, r, how) => ({ kind: 'ssh', server: vm.name || vm.host, command, code: r.code, output: H.clip(stripAnsi(r.output || ''), 20000), how });
-  /**
-   * Run a command (chat tool and the Run screen). Read-only commands run straight away with no ticket; so do changing
-   * ones when Settings › Safety › "Ask before SSH commands that change things" is off and the command isn't protected.
-   * Everything else opens the full-screen ticket + fingerprint. Old app shells (before 1.1.6) always need the ticket.
-   */
   /** Result for a dropped SSH link. Read-only commands get a Retry chip; a write is reported as unknown and never re-run. */
   const dropped = (vm, command, readOnly) => readOnly
     ? { status: 'connection_dropped', server: vm.name, message: 'The connection dropped twice. The user can tap Retry.', retry: { server: vm.id, command } }
     : { status: 'connection_dropped', server: vm.name, message: 'The connection dropped while this command was running. It may or may not have finished, and it was NOT re-run. Check its effect with a read-only command before suggesting anything else; never re-run it without the user asking.' };
-  H.sshRunTicket = async function (vmId, command, timeoutSec) {
+  /**
+   * Run a command (chat tool, Retry chip and the Run screen). Since 1.1.8 every command runs straight away: no ticket,
+   * no "Run on …" button, no fingerprint/PIN — changing, destructive and trading-folder commands included.
+   * Only if the user turns Settings › Safety › "Ask before SSH commands that change things" back on does a command that
+   * isn't read-only show a small Run/Cancel card in the chat first (commands he types himself on the Run screen never ask).
+   * Output always lands in the collapsible card. A dropped write is never re-run.
+   */
+  H.sshRunTicket = async function (vmId, command, timeoutSec, ctx, opts) {
+    opts = opts || {};
     const vm = ssh.vm(vmId);
     const v = ssh.classify(command);
-    if (ssh.nativePolicy() && !v.needsTicket) {
-      const run = async () => {
-        const r = await ssh.exec(vm.id, command, null, timeoutSec, true);
-        const how = v.readOnly ? 'read-only' : 'ran without asking (Safety setting off)';
-        return { status: v.readOnly ? 'ran_read_only' : 'ran_without_ticket_by_user_setting', server: vm.name, exit_code: r.code, output: H.clip(r.output, 12000), card: sshCard(vm, command, r, how) };
-      };
-      try { return await run(); } catch (e) {
-        if (!H.netErr(e)) return { status: 'failed', error: e.message };
-        // Only read-only commands are repeated (once, when the app is back in front). Writes are never re-run.
-        if (!v.readOnly) return dropped(vm, command, false);
-        await H.whenForeground(); await H.sleep(400);
-        try { return await run(); } catch (e2) { return H.netErr(e2) ? dropped(vm, command, true) : { status: 'failed', error: e2.message }; }
-      }
+    let asked = false;
+    if (v.needsTicket && !opts.typedByUser) {
+      const ok = await H.ui.inlineConfirm(ctx, { title: 'Command on ' + (vm.name || vm.host), fields: [['Server', vm.user + '@' + vm.host]], body: command, goText: 'Run', doneText: 'Running…' });
+      if (ok === null) return { status: 'blocked', message: 'Settings › Safety › “Ask before SSH commands that change things” is on, so this command needs his tap in the chat. Nothing ran.' };
+      if (!ok) return { status: 'declined', message: 'The user tapped Cancel. Nothing ran.' };
+      asked = true;
     }
-    const danger = !v.readOnly && (v.protected || RISKY.test(command));
-    const res = await H.ui.ticket({
-      badge: v.readOnly ? 'READ-ONLY' : danger ? 'DANGER' : 'ACTION', source: vm.name + ' · SSH ' + vm.user + '@' + vm.host, headline: v.readOnly ? 'Read from the server' : 'Run a command', code: command,
-      warn: v.readOnly ? 'This command only reads. Update Shoeb AI to 1.1.6 and read-only commands run without this step.'
-        : (danger ? 'This command can change or stop things on the server. ' : '') + (vm.id === 'a1' ? 'hark-a1 runs your LIVE TradeSmart trading. ' : '') + 'It runs as ' + vm.user + ' only if you confirm.',
-      goText: 'Run on ' + (vm.name || vm.host),
-      run: () => ssh.exec(vm.id, command, null, timeoutSec),
-    });
-    if (!res.confirmed) return { status: 'declined', message: 'The user did not confirm. Nothing ran.' };
-    if (res.error && H.netErr({ message: res.error })) return dropped(vm, command, v.readOnly);
-    if (res.error) return { status: 'failed_after_confirmation', error: res.error };
-    return { status: 'ran_after_user_confirmation', server: vm.name, exit_code: res.result.code, output: H.clip(res.result.output, 12000), card: sshCard(vm, command, res.result, 'confirmed') };
+    const run = async () => {
+      // direct=false only when the app still wants a one-time token (Safety › Ask on, or an app older than 1.1.8);
+      // ssh.exec then fetches it from the native WriteGuard — the tap above (or typing it himself) is the approval.
+      const r = await ssh.exec(vm.id, command, null, timeoutSec, !v.needsTicket);
+      const how = v.readOnly ? 'read-only' : asked ? 'confirmed' : 'ran directly';
+      return { status: v.readOnly ? 'ran_read_only' : asked ? 'ran_after_user_confirmation' : 'ran', server: vm.name, exit_code: r.code, output: H.clip(r.output, 12000), card: sshCard(vm, command, r, how) };
+    };
+    try { return await run(); } catch (e) {
+      if (e.notApproved) return { status: 'declined', message: 'Not approved on the phone. Nothing ran.' };
+      if (!H.netErr(e)) return { status: 'failed', error: e.message };
+      // Only read-only commands are repeated (once, when the app is back in front). Writes are never re-run.
+      if (!v.readOnly) return dropped(vm, command, false);
+      await H.whenForeground(); await H.sleep(400);
+      try { return await run(); } catch (e2) { return H.netErr(e2) ? dropped(vm, command, true) : { status: 'failed', error: e2.message }; }
+    }
   };
 
   // ============================================================ Oracle Cloud
@@ -163,7 +160,8 @@
   });
   const ACTIONS = { START: 'Start', STOP: 'Stop (graceful)', SOFTSTOP: 'Stop (graceful)', SOFTRESET: 'Reboot (graceful)', RESET: 'Force reboot', TERMINATE: 'Terminate' };
   /** Ticket for an instance action. Terminate also needs the instance name typed. */
-  H.ociActionTicket = async function (inst, action, preserveBoot) {
+  H.ociActionTicket = async function (inst, action, preserveBoot, opts) {
+    const auto = !!(opts && opts.auto);
     action = String(action || '').toUpperCase();
     if (action === 'STOP') action = 'SOFTSTOP';
     if (action === 'REBOOT') action = 'SOFTRESET';
@@ -178,14 +176,14 @@
       cells: [['Instance', inst.name], ['State now', inst.state], ['Shape', (inst.ocpus || '?') + ' OCPU / ' + (inst.memoryGb || '?') + ' GB'], ['Action', ACTIONS[action]]].concat(terminate ? [['Boot volume', pres ? 'Kept' : 'DELETED']] : []),
       warn: terminate ? 'Terminating deletes the VM permanently' + (pres ? ' (its boot volume is kept and can be reattached)' : ' and its boot volume: all data is lost') + '. ' + (isA1 ? 'hark-a1 runs your LIVE TradeSmart and Wisdom servers. ' : '') + 'This cannot be undone.'
         : action === 'START' ? 'Starts the VM. A stopped Always Free VM may fail to start if Mumbai has no capacity.' : (isA1 ? 'hark-a1 runs your LIVE TradeSmart trading, Wisdom paper and OpenClaw. They stop until the VM is back. ' : '') + 'Running programs on the VM are interrupted.',
-      typeToConfirm: terminate ? inst.name : null,
+      typeToConfirm: terminate ? inst.name : null, auto,
       goText: ACTIONS[action],
       run: () => oci.req(terminate ? 'DELETE' : 'POST', 'iaas', path, terminate ? '' : '', 'Oracle Cloud: ' + ACTIONS[action] + ' ' + inst.name),
     });
     if (!res.confirmed) return { status: 'declined', message: 'The user did not confirm. Nothing was changed.' };
-    if (res.error) return { status: 'failed_after_confirmation', error: res.error };
+    if (res.error) return { status: auto ? 'failed' : 'failed_after_confirmation', error: res.error };
     H.toast('Oracle Cloud: ' + ACTIONS[action].toLowerCase() + ' requested for ' + inst.name);
-    return { status: 'requested_after_user_confirmation', instance: inst.name, action, state: res.result && res.result.lifecycleState };
+    return { status: auto ? 'requested' : 'requested_after_user_confirmation', instance: inst.name, action, state: res.result && res.result.lifecycleState };
   };
 
   // ============================================================ Connections
@@ -373,18 +371,18 @@
     const vms = ssh.vms();
     if (vms.length) {
       add('ssh_servers', 'List Shoeb’s SSH servers (no secrets).', { type: 'object', properties: {} }, () => vms.map((v) => ({ id: v.id, name: v.name, host: v.host, user: v.user, note: v.note })), { label: 'Servers', sum: () => vms.length + ' saved' });
-      add('ssh_run', 'Run a shell command on one of Shoeb’s servers over SSH. Read-only commands (status, free, df, ps, ls, cat, grep, logs, docker ps, systemctl status, journalctl, curl GET to localhost…) run immediately and the output shows in chat. Commands that change things open a full-screen ticket and run only after his tap + fingerprint/PIN (unless he turned that off in Safety). Prefer read-only commands (status, logs, df, free, docker ps, systemctl status, journalctl). Never stop or change trading containers, strategies, timers or OpenClaw unless he explicitly asked. Servers: ' + vms.map((v) => v.id + ' = ' + v.name).join('; '),
+      add('ssh_run', 'Run a shell command on one of Shoeb’s servers over SSH. The command runs immediately (there is no confirmation step) and its output shows in the chat as a collapsible card. Prefer read-only commands (status, logs, df, free, docker ps, systemctl status, journalctl) and run commands that change things only when he asked for them or they are clearly needed for his request. Never stop or change trading containers, strategies, timers, the trading folders or OpenClaw unless he explicitly asked. If a command that changes things loses its connection, it is not re-run: check its effect with a read-only command. Servers: ' + vms.map((v) => v.id + ' = ' + v.name).join('; '),
         { type: 'object', properties: { server: { type: 'string', enum: vms.map((v) => v.id) }, command: { type: 'string' }, timeout_sec: { type: 'integer' } }, required: ['server', 'command'] },
-        (a) => H.sshRunTicket(a.server, a.command, a.timeout_sec), { label: 'SSH command', sum: (a) => a.server + ': ' + String(a.command).slice(0, 60), write: true });
+        (a, ctx) => H.sshRunTicket(a.server, a.command, a.timeout_sec, ctx), { label: 'SSH command', sum: (a) => a.server + ': ' + String(a.command).slice(0, 60), write: true });
     }
     if (oci.info().configured) {
       add('oci_instances', 'List Oracle Cloud instances (name, state, shape, OCPU/memory). Read-only.', { type: 'object', properties: {} }, () => oci.instances(), { label: 'Oracle Cloud', sum: () => 'instances' });
       add('oci_boot_volumes', 'List Oracle Cloud boot volumes. Read-only.', { type: 'object', properties: {} }, () => oci.bootVolumes(), { label: 'Oracle Cloud', sum: () => 'boot volumes' });
       add('oci_usage', 'Always Free usage summary (A1 OCPU/memory, micro VMs, block storage) plus Oracle’s reported limits. Read-only.', { type: 'object', properties: {} }, () => oci.usage(), { label: 'Oracle Cloud', sum: () => 'free-tier usage' });
-      add('oci_instance_action', 'Draft an Oracle Cloud instance action as a ticket: START, STOP, SOFTRESET (reboot), RESET (force reboot) or TERMINATE (also needs the instance name typed; boot volume kept unless preserve_boot_volume=false). Runs only after Shoeb taps confirm + fingerprint/PIN. hark-a1 hosts his LIVE trading: warn him before stopping it.',
+      add('oci_instance_action', 'Run an Oracle Cloud instance action: START, STOP, SOFTRESET (reboot), RESET (force reboot) or TERMINATE (boot volume kept unless preserve_boot_volume=false). It EXECUTES IMMEDIATELY with no confirmation step (unless Shoeb turned cloud confirmations on in Settings › Safety). Use only when he asked for that exact action on that instance; hark-a1 hosts his LIVE trading.',
         { type: 'object', properties: { instance: { type: 'string', description: 'display name or OCID' }, action: { type: 'string', enum: ['START', 'STOP', 'SOFTRESET', 'RESET', 'TERMINATE'] }, preserve_boot_volume: { type: 'boolean' } }, required: ['instance', 'action'] },
-        async (a) => { const ins = await oci.instances(); const i = oci.find(ins, a.instance); if (!i) throw new Error('No instance matches ' + a.instance); return H.ociActionTicket(i, a.action, a.preserve_boot_volume); },
-        { label: 'Oracle Cloud ticket', sum: (a) => a.action + ' ' + a.instance, write: true });
+        async (a) => { const ins = await oci.instances(); const i = oci.find(ins, a.instance); if (!i) throw new Error('No instance matches ' + a.instance); return H.ociActionTicket(i, a.action, a.preserve_boot_volume, { auto: !H.askFirst('askCloud') }); },
+        { label: 'Oracle Cloud', sum: (a) => a.action + ' ' + a.instance, write: true });
     }
   };
 
@@ -510,13 +508,20 @@
           }, '')), st));
   });
 
-  ui.runCommand = (vm) => screen('Run on ' + (vm.name || vm.host), (b) => {
+  ui.runCommand = (vm) => screen('Command · ' + (vm.name || vm.host), (b) => {
     const cmd = el('textarea', { placeholder: 'e.g. docker ps --format "{{.Names}}  {{.Status}}"', spellcheck: 'false', autocapitalize: 'off', style: { fontFamily: 'var(--mono)', fontSize: '13px' } });
     const out = el('pre', { class: 'term small' });
     const quick = ['uptime; free -m; df -h /', 'docker ps --format "{{.Names}}  {{.Status}}"', 'systemctl list-timers --no-pager | head -25', 'journalctl -u hark-runner -n 40 --no-pager', 'tail -n 40 ~/logs/oa-notify.log'];
-    b.append(el('div', { class: 'note', text: 'Each command opens a ticket and runs only after you confirm with fingerprint/PIN.' }), field('Command', cmd),
+    let busy = false;
+    const go = async () => {
+      if (busy || !cmd.value.trim()) return; busy = true; out.textContent = 'Running…';
+      try { const r = await H.sshRunTicket(vm.id, cmd.value.trim(), null, null, { typedByUser: true }); out.textContent = r.output != null ? stripAnsi(r.output) + '\n[exit ' + r.exit_code + ']' : (r.error || r.message || ''); }
+      catch (e) { out.textContent = e.message; } finally { busy = false; }
+    };
+    cmd.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); go(); } });
+    b.append(el('div', { class: 'note', text: 'Enter (or Send) runs the command right away. Shift+Enter adds a new line.' }), field('Command', cmd),
       el('div', { class: 'chips' }, quick.map((q) => el('button', { class: 'chip', text: q.length > 34 ? q.slice(0, 32) + '…' : q, onclick: () => { cmd.value = q; } }))),
-      btn('Run', async () => { if (!cmd.value.trim()) return; out.textContent = ''; const r = await H.sshRunTicket(vm.id, cmd.value.trim()); out.textContent = r.output != null ? stripAnsi(r.output) + '\n[exit ' + r.exit_code + ']' : (r.error || r.message || ''); }, 'block'), out);
+      btn('Send', go, 'block'), out);
   });
 
   // ----- Terminal -----
@@ -546,7 +551,7 @@
         el('div', { class: 'term-row' }, input, el('button', { class: 'btn', text: 'Send', onclick: () => { send(input.value + '\n'); input.value = ''; } })));
     });
     if (!O) { write('Terminal needs the Android app.\n'); return; }
-    write('Connecting to ' + vm.user + '@' + vm.host + ' (confirm with fingerprint/PIN)…\n');
+    write('Connecting to ' + vm.user + '@' + vm.host + '…\n');
     H.nativeCallRaw(cbId, (type, d) => {
       if (type === 'open') { sid = d.sid; write('Connected. Host key verified.\n'); setTimeout(() => input.focus(), 200); }
       else if (type === 'data') write(d.t);
@@ -568,7 +573,7 @@
     const usage = el('div', { class: 'card' }, row(icon.info, 'Loading…', ''));
     const insCard = el('div', { class: 'card' }, row(icon.info, 'Loading…', ''));
     const volCard = el('div', { class: 'card' }, row(icon.info, 'Loading…', ''));
-    b.append(el('div', { class: 'note', text: 'Region ' + info.region + ' · API key …' + info.fingerprintTail + '. Start/stop/reboot/terminate open a ticket and need fingerprint/PIN; terminate also needs the name typed.' }),
+    b.append(el('div', { class: 'note', text: 'Region ' + info.region + ' · API key …' + info.fingerprintTail + '. Start/stop/reboot/terminate open a ticket you tap to confirm; terminate also needs the name typed.' }),
       sec('Free-tier usage'), usage, sec('Instances'), insCard, sec('Boot volumes'), volCard, el('div', { class: 'btns' }, btn('Refresh', redraw, '')));
     oci.usage().then((u) => {
       usage.innerHTML = '';

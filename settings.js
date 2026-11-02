@@ -171,7 +171,7 @@
 
   // ---------------- brokers ----------------
   SECTIONS.brokers = () => screen('Brokers & MCP', (b, redraw) => {
-    b.append(el('div', { class: 'note', text: 'Hark reads funds, positions, holdings, orders, trades, P&L, quotes and history, and can draft any trading action: place, smart, basket, split, modify, cancel, cancel all, close all and analyzer toggle. Each one opens a full-screen ticket labelled LIVE or PAPER and is sent only after your tap plus fingerprint/PIN. Nothing is ever sent by the AI on its own.' }));
+    b.append(el('div', { class: 'note', text: 'Hark reads funds, positions, holdings, orders, trades, P&L, quotes and history, and can send any trading action: place, smart, basket, split, modify, cancel, cancel all, close all and analyzer toggle. When you ask for one in the chat it goes to the broker at once; turn on Settings › Safety › Ask before orders to get a LIVE/PAPER ticket first. Trade-desk buttons you press yourself always show a ticket.' }));
     H.settings.openalgo.forEach((a) => {
       const k = H.vault.byProvider(a.provider).find((x) => a.base && x.host === new URL(a.base).host) || H.vault.byProvider(a.provider)[0];
       const baseIn = el('input', { value: a.base });
@@ -196,10 +196,10 @@
       b.append(sec(a.name), el('div', { class: 'card', style: { padding: '4px 14px 12px' } },
         el('div', { style: { margin: '10px 0' }, html: '<span class="badge ' + (a.mode === 'LIVE' ? 'live' : 'paper') + '" style="margin:0">' + (a.mode === 'LIVE' ? 'LIVE' : 'PAPER') + '</span> <span class="note">' + (k ? 'Key: ' + H.esc(k.label) + ' (' + H.esc(k.preview) + ')' : 'No key yet — import or add one') + '</span>' }),
         field('OpenAlgo address' + (tunnel ? ' (SSH tunnel to hark-a1)' : ''), baseIn),
-        el('div', { class: 'note', text: a.mode === 'LIVE' ? 'LIVE money. Every write needs your tap + fingerprint/PIN.' : 'Paper. Orders are refused unless analyzer (paper) mode is on.' }),
+        el('div', { class: 'note', text: a.mode === 'LIVE' ? 'LIVE money. Every write needs your tap on its ticket.' : 'Paper. Orders are refused unless analyzer (paper) mode is on.' }),
         el('div', { class: 'btns' }, test, swap, el('button', { class: 'btn ghost', text: 'Trade desk', onclick: () => H.opsUI.trade(a.id) })), out));
     });
-    b.append(sec('Order safety'), el('div', { class: 'card' }, row(icon.shield, 'Fingerprint/PIN for every write', N ? 'Always on. Enforced by the phone for the exact request.' : 'Android app only; the browser asks for a confirm instead', null)));
+    b.append(sec('Order safety'), el('div', { class: 'card' }, row(icon.shield, 'Tap to confirm every order', N ? 'Each ticket is bound to the exact request by the phone. No fingerprint/PIN.' : 'The browser asks for a confirm instead', null)));
     b.append(el('div', { class: 'btns' }, el('button', { class: 'btn ghost', text: 'MCP servers', onclick: SECTIONS.mcp }), el('button', { class: 'btn ghost', text: 'Connections', onclick: () => H.opsUI.connections() })));
   });
 
@@ -223,7 +223,7 @@
         connect.disabled = false;
       };
       b.append(sec(s.name), el('div', { class: 'card', style: { padding: '4px 14px 12px' } },
-        el('div', { class: 'note', text: s.url + (s.runner ? ' · via SSH tunnel, token in the vault · write tools need tap + fingerprint' : '') }),
+        el('div', { class: 'note', text: s.url + (s.runner ? ' · via SSH tunnel, token in the vault · write tools need a tap on the ticket' : '') }),
         el('div', { class: 'row', style: { padding: '8px 0', border: 0 } }, el('span', { class: 't', html: '<b>Enabled in chat</b>' }), toggle(s.enabled, (v) => { s.enabled = v; H.saveSettings(); })),
         el('div', { class: 'row', style: { padding: '8px 0', border: 0 } }, el('span', { class: 't', html: '<b>Read-only</b><small>Hide tools that can place/modify/cancel orders or move money</small>' }),
           toggle(s.readOnly, async (v, inp) => {
@@ -345,28 +345,35 @@
   SECTIONS.safety = () => screen('Safety', (b, redraw) => {
     const ssh = H.ssh;
     const native = !!(ssh && ssh.nativePolicy && ssh.nativePolicy());
-    const pol = native ? ssh.policy() : { askChanges: true };
+    const pol = native ? ssh.policy() : { askChanges: false };
     const st = el('div', { class: 'note' });
     b.append(sec('SSH commands'), el('div', { class: 'card' },
-      row(icon.check || icon.shield, 'Read-only commands run directly', 'free, df, ps, ls, cat, grep, logs, docker ps, systemctl status, journalctl, curl GET to localhost… No ticket, no fingerprint; output shows in the chat.', null),
-      row(icon.shield, 'Ask before SSH commands that change things', native ? (pol.askChanges ? 'On — ticket + fingerprint/PIN for anything that isn’t read-only' : 'Off — changing commands run directly, except the protected ones below') : 'Needs Shoeb AI 1.1.6 or newer', null,
+      row(icon.check || icon.shield, 'Commands run directly', 'Every SSH command from the chat or the Run screen runs at once, including ones that change things. Output shows in a collapsible card in the chat.', null),
+      row(icon.shield, 'Ask before SSH commands that change things', native ? (pol.askChanges ? 'On — a Run/Cancel card in the chat for anything that isn’t read-only' : 'Off — every command runs directly (default)') : 'Needs Shoeb AI 1.1.6 or newer', null,
         native ? toggle(pol.askChanges, async (v, inp) => {
-          try { const r = await ssh.setAskChanges(v); inp.checked = !!r.askChanges; if (!v && r.askChanges) st.textContent = 'Not changed — fingerprint/PIN wasn’t confirmed.'; else redraw(); }
+          try { const r = await ssh.setAskChanges(v); inp.checked = !!r.askChanges; if (!!r.askChanges !== !!v) st.textContent = 'Not changed.'; else redraw(); }
           catch (e) { inp.checked = !v; st.textContent = e.message; }
         }) : null)),
       st,
-      el('div', { class: 'note', text: 'Always ask, even with this off: rm -rf /, reboot/shutdown, stopping or removing openalgo containers, and anything touching ~/openalgo-tradesmart or ~/wisdom. Anything the app can’t recognise counts as a change. Turning this off needs your fingerprint/PIN.' }));
-    b.append(sec('Trading & cloud'), el('div', { class: 'card' },
-      row(icon.chart, 'Orders, cancels, closes, analyzer toggle', 'Always a LIVE/PAPER ticket + fingerprint/PIN for the exact request', null),
-      row(icon.globe, 'Oracle Cloud start/stop/reboot/terminate', 'Always a ticket + fingerprint/PIN; terminate also needs the name typed', null)));
+      el('div', { class: 'note', text: 'With this off nothing asks — not even rm -rf /, reboot/shutdown, openalgo containers or ~/openalgo-tradesmart and ~/wisdom. A command that changes things is never re-run automatically if the connection drops. No fingerprint/PIN anywhere in the app.' }));
+    // What the AI sends or runs from the chat goes out at once. Each switch (all off by default) brings back a confirmation.
+    const sf = H.settings.safety || (H.settings.safety = {});
+    const ask = (k, icn, title, onText, offText) => row(icn, title, sf[k] ? onText : offText, null,
+      toggle(sf[k], (v) => { sf[k] = !!v; H.saveSettings(); redraw(); }));
+    b.append(sec('What the AI sends or runs'), el('div', { class: 'card' },
+      ask('askTrades', icon.chart, 'Ask before orders', 'On — orders, cancels, closes and the analyzer toggle open a LIVE/PAPER ticket you tap', 'Off — the AI’s orders go to the broker at once (default)'),
+      ask('askCloud', icon.globe, 'Ask before Oracle Cloud actions', 'On — start/stop/reboot/terminate open a ticket (terminate needs the name typed)', 'Off — run at once, terminate included (default)'),
+      ask('askTools', icon.plug || icon.shield, 'Ask before MCP / runner write tools', 'On — a ticket before each write tool', 'Off — run at once (default)'),
+      ask('askEmail', icon.mail || icon.shield, 'Ask before sending email', 'On — a Send/Cancel card in the chat', 'Off — emails go out at once (default)')),
+      el('div', { class: 'note', text: 'Wisdom orders are still refused unless its analyzer (paper) mode is on. Buttons you press yourself on the Trade desk and Oracle Cloud screens keep their ticket.' }));
   });
 
   SECTIONS.security = () => screen('Security & privacy', (b) => {
     b.append(el('div', { class: 'content', style: { lineHeight: 1.6, fontSize: '15px' }, html: DOMPurify.sanitize(marked.parse([
       '**Keys** live in an encrypted vault backed by Android Keystore. The web code that draws this app only handles placeholders; the phone inserts a key only into requests to the address that key was saved for, and blanks it out of any response.',
       '**Moving a key** to a new address (for example a new ngrok URL) needs your OK in a native Android dialog.',
-      '**Trading**: the AI can draft any action (place, smart, basket, split, modify, cancel, cancel all, close all, analyzer toggle), but only as a full-screen ticket labelled LIVE (TradeSmart) or PAPER (Wisdom). It is sent only after you tap confirm' + (N ? ' and pass the phone\'s fingerprint/PIN prompt, which is tied to that exact request and enforced by native code' : '') + '. Wisdom orders are refused unless analyzer (paper) mode is on.',
-      '**Servers**: SSH keys, the Oracle Cloud key and runner tokens stay inside the app. Host keys are pinned. Loopback services on your VM are reached through SSH tunnels; no port is opened. Commands, VM start/stop/reboot and terminate (which also needs the name typed) each need a ticket plus fingerprint/PIN.',
+      '**Trading**: the AI can send any action (place, smart, basket, split, modify, cancel, cancel all, close all, analyzer toggle) to TradeSmart (LIVE) or Wisdom (PAPER). From 1.1.8 it goes out at once, with no confirmation; Settings › Safety › Ask before orders brings back the tap ticket. Wisdom orders are refused unless analyzer (paper) mode is on.',
+      '**Servers**: SSH keys, the Oracle Cloud key and runner tokens stay inside the app. Host keys are pinned. Loopback services on your VM are reached through SSH tunnels; no port is opened. SSH commands, VM start/stop/reboot/terminate and emails the AI sends run at once (Settings › Safety has a switch for each to bring back a confirmation). No fingerprint/PIN anywhere.',
       '**Chats** are stored on this phone (app storage). **Memory** is encrypted on this phone. Nothing is sent anywhere except to the model provider you chose and the tools you enabled.',
       '**Updates**: the app loads its interface from GitHub Pages, so improvements arrive without reinstalling. Keys are never part of the app or the repositories.',
     ].join('\n\n'))) }));

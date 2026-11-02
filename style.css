@@ -334,3 +334,12 @@ details.outcard pre.oout{font-family:ui-monospace,Menlo,monospace;font-size:12px
 .chip.dropchip{display:inline-flex;align-items:center;gap:6px;margin-top:8px;padding:6px 12px;border-radius:999px;font-size:13px;border:1px solid var(--line);background:var(--bg2);color:var(--ink2)}
 .chip.dropchip:disabled{opacity:.6}
 .note.reconnecting{margin-top:6px;font-size:13px}
+/* in-chat confirm card (Gmail send; SSH when Safety › Ask is on) */
+.icard{margin:6px 0 8px;padding:10px 12px;border:1px solid var(--line);border-radius:12px;background:var(--card)}
+.icard .ict{display:block;font-size:14px;margin-bottom:6px;color:var(--ink)}
+.icard .icf{display:flex;gap:8px;font-size:13px;margin:2px 0;word-break:break-word}
+.icard .icf small{color:var(--muted);min-width:44px}
+.icard pre.icbody{font-family:inherit;font-size:13px;line-height:1.45;white-space:pre-wrap;word-break:break-word;max-height:260px;overflow:auto;margin:8px 0 4px;padding:8px 10px;background:var(--bg2);border-radius:8px}
+.icard .btns{display:flex;gap:8px;margin-top:8px}
+.icard .mini.go{background:var(--ink);color:var(--bg);font-size:13px;padding:6px 14px;font-weight:600}
+.icard .mini.ghost{border:1px solid var(--line);font-size:13px;padding:6px 14px}

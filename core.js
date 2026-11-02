@@ -46,8 +46,9 @@
   /** Exact request key the native WriteGuard hashes: "METHOD url\nbody". */
   H.reqKey = (method, url, body) => String(method || 'GET').toUpperCase() + ' ' + url + '\n' + (body == null ? '' : body);
   /**
-   * Ask for a native biometric/PIN approval of exact requests. Resolves to tokens; throws
-   * (e.notApproved) if the user cancels. In a plain browser it falls back to confirm().
+   * One-time native approvals (WriteGuard tokens) for exact requests, fetched after the user's tap on a ticket or
+   * in-chat card. No fingerprint/PIN from 1.1.8 (apps up to 1.1.7 still show their own native prompt until they update).
+   * Throws (e.notApproved) if refused. In a plain browser it falls back to confirm().
    */
   H.approve = async function (title, keys) {
     if (O) {
@@ -55,13 +56,7 @@
       if (!r || !r.ok) { const e = new Error('Not confirmed'); e.notApproved = true; throw e; }
       return r.tokens;
     }
-    // Older Android shell (v1.0) without native approvals: still require fingerprint/PIN.
-    if (N && N.biometric && N.biometricAvailable && N.biometricAvailable()) {
-      const r = await nativeCall('biometric', title, keys.map((k) => k.split('\n')[0].replace(/^\w+ /, '')).join(' · ').slice(0, 120));
-      if (!r || !r.ok) { const e = new Error('Not confirmed'); e.notApproved = true; throw e; }
-      return keys.map(() => 'shell-v1');
-    }
-    if (!window.confirm(title + '\n\n' + keys.map((k) => k.split('\n')[0]).join('\n'))) { const e = new Error('Not confirmed'); e.notApproved = true; throw e; }
+    // Plain browser (no app): no confirm() dialog either; the tickets / Safety switches are the only confirmation.
     return keys.map(() => 'browser');
   };
   H.nativeCallRaw = (id, fn) => handlers.set(id, fn);
@@ -301,7 +296,9 @@
       { id: 'dhan', name: 'Dhan', url: 'https://mcp.dhan.co/mcp', enabled: false, readOnly: true, trading: true },
     ],
     custom: { base: '', name: 'Custom (OpenAI-compatible)' },
-    projects: [], tasks: [], knowledge: '', requireBiometricForOrders: true, widgetSource: '', lastConnections: null,
+    projects: [], tasks: [], knowledge: '',
+    // Settings › Safety (1.1.8): everything the AI sends or runs goes out at once. Each switch brings back a confirmation.
+    safety: { askTrades: false, askCloud: false, askTools: false, askEmail: false }, widgetSource: '', lastConnections: null,
   };
   function deepMerge(a, b) {
     const o = Array.isArray(a) ? a.slice() : Object.assign({}, a);
@@ -311,6 +308,8 @@
     }
     return o;
   }
+  /** True only when the user turned that confirmation back on in Settings › Safety (all off by default). */
+  H.askFirst = (k) => !!(H.settings && H.settings.safety && H.settings.safety[k]);
   H.settings = (() => { try { return deepMerge(DEFAULT_SETTINGS, JSON.parse(localStorage.getItem('hark.settings') || '{}')); } catch (_) { return deepMerge(DEFAULT_SETTINGS, {}); } })();
   H.saveSettings = () => localStorage.setItem('hark.settings', JSON.stringify(H.settings));
 

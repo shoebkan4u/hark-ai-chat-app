@@ -1,8 +1,8 @@
 /* Shoeb AI — Settings › Connections: Gmail (App Password), Telegram (OpenClaw bot link), Saved logins.
    Secrets never enter this file after they are typed: the App Password, login passwords and TOTP secrets
    are handed once to the Android app (window.HarkAcct), stored in its encrypted vault and never returned.
-   The chat AI can search/read mail, save drafts and list login sites/usernames; sending opens a full-screen
-   ticket and needs tap + fingerprint/PIN for that exact message. */
+   The chat AI can search/read mail, save drafts, send mail and list login sites/usernames. Since 1.1.8 sending goes out
+   immediately (no card, no fingerprint/PIN) unless Settings › Safety › "Ask before sending email" is on. */
 (function () {
   'use strict';
   const H = window.Hark;
@@ -33,8 +33,11 @@
   });
   const normMail = (a) => ({ to: String(a.to || '').trim(), cc: String(a.cc || '').trim(), subject: String(a.subject || '').trim(), body: String(a.body || '') });
 
-  /** Full-screen ticket with recipients and the full text; sent only after tap + fingerprint/PIN for this exact message. */
-  H.gmailSendTicket = async function (args) {
+  /**
+   * Sends straight away (1.1.8: no confirmation, no fingerprint/PIN). Only if he turns Settings › Safety › "Ask before
+   * sending email" on does an in-chat Send/Cancel card come first. The native one-time token binds the exact message.
+   */
+  H.gmailSendTicket = async function (args, ctx) {
     need();
     const g = gmail.info();
     if (!g.configured) return { status: 'not_configured', message: 'Gmail is not set up. Add it in Settings › Connections › Gmail.' };
@@ -42,18 +45,26 @@
     if (!m.to) return { status: 'blocked', message: 'No recipient.' };
     const json = JSON.stringify(m);
     const key = 'GMAIL send\n' + json;
-    const res = await H.ui.ticket({
-      badge: 'ACTION', source: 'Gmail · from ' + g.email, headline: m.subject || '(no subject)',
-      cells: [['To', m.to]].concat(m.cc ? [['Cc', m.cc]] : []),
-      code: m.body, note: 'Hark drafted this email. It is sent only if you confirm here and on the fingerprint/PIN prompt.',
-      warn: 'This sends a real email from ' + g.email + ' to ' + [m.to, m.cc].filter(Boolean).join(', ') + '.',
-      goText: 'Send email',
-      run: async () => { const [tok] = await H.approve('Send email', [key]); return call('gmailSend', json, tok); },
+    // Sends at once (Settings › Safety › "Ask before sending email" off, the default); with it on, a Send/Cancel card.
+    const ask = H.askFirst('askEmail');
+    const ok = !ask ? true : await H.ui.inlineConfirm(ctx, {
+      title: 'Send email from ' + g.email,
+      fields: [['To', m.to]].concat(m.cc ? [['Cc', m.cc]] : []).concat([['Subject', m.subject || '(no subject)']]),
+      body: m.body, goText: 'Send', doneText: 'Sending…',
     });
-    if (!res.confirmed) return { status: 'declined', message: 'The user did not confirm. Nothing was sent.' };
-    if (res.error) return { status: 'failed_after_confirmation', error: res.error };
+    if (ok === null) return { status: 'blocked', message: 'Sending needs the chat screen (Send/Cancel card). Nothing was sent.' };
+    if (!ok) return { status: 'declined', message: 'The user tapped Cancel. Nothing was sent.' };
+    const card = ask ? ctx.step.confirm : {};
+    try {
+      const [tok] = await H.approve('Send email', [key]);
+      await call('gmailSend', json, tok);
+    } catch (e) {
+      card.doneText = 'Not sent: ' + e.message; if (ctx && ctx.paint) ctx.paint();
+      return { status: ask ? 'failed_after_confirmation' : 'failed', error: e.message };
+    }
+    card.doneText = 'Sent'; if (ctx && ctx.paint) ctx.paint();
     H.toast('Email sent');
-    return { status: 'sent_after_user_confirmation', to: m.to, cc: m.cc, subject: m.subject };
+    return { status: ask ? 'sent_after_user_confirmation' : 'sent', to: m.to, cc: m.cc, subject: m.subject };
   };
 
   // ============================================================ Saved logins
@@ -78,9 +89,9 @@
       add('gmail_draft', 'Save an email as a draft in Gmail’s Drafts folder. Nothing is sent. Plain text body.',
         { type: 'object', properties: { to: { type: 'string', description: 'comma-separated addresses' }, cc: { type: 'string' }, subject: { type: 'string' }, body: { type: 'string' } }, required: ['to', 'subject', 'body'] },
         async (a) => { const m = normMail(a); const r = await gmail.draft(m); return { status: 'draft_saved', folder: r.folder, to: m.to, subject: m.subject }; }, { label: 'Saving Gmail draft', sum: (a) => a.to + ' · ' + (a.subject || '') });
-      add('gmail_send', 'Send an email from Shoeb’s Gmail. Opens a full-screen ticket showing recipients and the full text; it is sent only after his tap + fingerprint/PIN. You can never send on your own. Use only when he asked to send; prefer gmail_draft when unsure. Never retry a declined ticket.',
+      add('gmail_send', 'Send an email from Shoeb’s Gmail. It is SENT IMMEDIATELY with no confirmation step (unless he turned email confirmations on in Settings › Safety). Use only when he asked to send, to the recipients he named; use gmail_draft when he only wants a draft or anything is unclear. Never resend without asking.',
         { type: 'object', properties: { to: { type: 'string', description: 'comma-separated addresses' }, cc: { type: 'string' }, subject: { type: 'string' }, body: { type: 'string' } }, required: ['to', 'subject', 'body'] },
-        (a) => H.gmailSendTicket(a), { label: 'Email ticket', sum: (a) => a.to + ' · ' + (a.subject || ''), write: true });
+        (a, ctx) => H.gmailSendTicket(a, ctx), { label: 'Email', sum: (a) => a.to + ' · ' + (a.subject || ''), write: true });
     }
     if (logins.list().length) {
       add('logins_list', 'List Shoeb’s saved logins: site, username and whether a password / 2FA secret is saved. Passwords and 2FA secrets are never available to you; he can copy them himself in Settings › Connections › Saved logins.',
@@ -119,7 +130,7 @@
     const email = el('input', { type: 'email', value: g.email || '', placeholder: 'you@gmail.com', autocapitalize: 'off', autocomplete: 'off' });
     const pw = secretInput(g.configured ? 'Saved · paste a new one to replace' : '16-letter App Password');
     const st = el('div', { class: 'note' });
-    b.append(el('div', { class: 'note', text: 'Shoeb AI signs in to Gmail with a Google App Password (IMAP/SMTP over TLS). It is stored only in the phone’s encrypted vault and is never shown again or given to the AI. The AI can search, read and draft; every send opens a ticket with the recipients and full text and needs your fingerprint/PIN.' }),
+    b.append(el('div', { class: 'note', text: 'Shoeb AI signs in to Gmail with a Google App Password (IMAP/SMTP over TLS). It is stored only in the phone’s encrypted vault and is never shown again or given to the AI. The AI can search, read and draft; when you ask it to send, the email goes out at once (turn on Settings › Safety › Ask before sending email to get a Send/Cancel card first).' }),
       el('div', { class: 'card', style: { padding: '4px 14px 12px' } }, field('Gmail address', email), field('App Password', pw),
         el('div', { class: 'note help', text: 'Create one at Google Account › Security › 2-Step Verification › App passwords.' }),
         el('div', { class: 'btns' },
@@ -145,11 +156,11 @@
   ui.logins = () => screen('Saved logins', (b, redraw) => {
     if (appOnly(b)) return;
     const list = logins.list();
-    b.append(el('div', { class: 'note', text: 'Passwords and 2FA secrets are kept only in the phone’s encrypted vault. Showing or copying a password or 2FA code needs your fingerprint/PIN, and the clipboard clears itself after 30 seconds. The AI can see site names and usernames, never passwords or 2FA secrets.' }));
+    b.append(el('div', { class: 'note', text: 'Passwords and 2FA secrets are kept only in the phone’s encrypted vault. Copied passwords and 2FA codes clear from the clipboard after 30 seconds, and Show opens a screenshot-blocked window that closes itself. The AI can see site names and usernames, never passwords or 2FA secrets.' }));
     const card = el('div', { class: 'card' }); b.append(card);
     if (!list.length) card.append(row(icon.key, 'No saved logins', 'Add one below'));
     const st = el('div', { class: 'note' });
-    const copied = (r, what) => { if (r && r.ok) st.textContent = (what === 'totp' ? '2FA code' : what[0].toUpperCase() + what.slice(1)) + ' copied · clears in ' + r.clearsInSec + ' s' + (r.validForSec ? ' · code valid ' + r.validForSec + ' s' : ''); else st.textContent = 'Not confirmed'; };
+    const copied = (r, what) => { if (r && r.ok) st.textContent = (what === 'totp' ? '2FA code' : what[0].toUpperCase() + what.slice(1)) + ' copied · clears in ' + r.clearsInSec + ' s' + (r.validForSec ? ' · code valid ' + r.validForSec + ' s' : ''); else st.textContent = 'Not copied'; };
     list.sort((x, y) => x.site.localeCompare(y.site)).forEach((l) => {
       const act = (what) => async () => { try { copied(await logins.copy(l.id, what), what); } catch (e) { st.textContent = e.message; } };
       card.append(el('div', { class: 'row', style: { flexWrap: 'wrap' } },
@@ -158,7 +169,7 @@
           btn('Copy user', act('username')),
           l.hasPassword ? btn('Copy password', act('password')) : null,
           l.hasTotp ? btn('Copy 2FA code', act('totp')) : null,
-          l.hasPassword ? btn('Show', async () => { try { const r = await logins.reveal(l.id); if (!r.ok) st.textContent = 'Not confirmed'; } catch (e) { st.textContent = e.message; } }) : null,
+          l.hasPassword ? btn('Show', async () => { try { const r = await logins.reveal(l.id); if (!r.ok) st.textContent = 'Couldn’t show it'; } catch (e) { st.textContent = e.message; } }) : null,
           btn('Edit', () => ui.editLogin(l, redraw)),
           btn('Delete', async () => { try { const r = await logins.del(l.id); if (r.ok) redraw(); } catch (e) { st.textContent = e.message; } }))));
     });

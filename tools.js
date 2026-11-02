@@ -71,8 +71,8 @@
 
   // ---------------- OpenAlgo ----------------
   // Reads go straight through. Every write (orders, cancels, closes, analyzer toggle) opens a
-  // full-screen ticket and is sent only after the user's tap + native fingerprint/PIN for that
-  // exact request (enforced again in native code).
+  // full-screen ticket and is sent only after the user's tap; native code (WriteGuard) still only sends
+  // the exact request that was tapped. No fingerprint/PIN since 1.1.8.
   const OA_READ = {
     funds: 'funds', positions: 'positionbook', holdings: 'holdings', orderbook: 'orderbook', tradebook: 'tradebook',
     quote: 'quotes', history: 'history', depth: 'depth', analyzer_status: 'analyzer', ping: 'ping', pnl: null, open_position: 'openposition',
@@ -220,8 +220,9 @@
     return { endpoint: k.ep, body, cells, lines, headline, warn, title: k.title };
   };
 
-  /** Show a ticket for a write action; send it only on tap + biometric. */
-  H.trade = async function (kind, args) {
+  /** Show a ticket for a write action; send it only on the user's tap. */
+  H.trade = async function (kind, args, opts) {
+    const auto = !!(opts && opts.auto);
     const acc = H.oaAccount(args.account);
     const spec = H.tradeSpec(kind, args, acc);
     const isOrder = TRADE_KINDS[kind].order;
@@ -236,14 +237,14 @@
       source: acc.name + ' · OpenAlgo' + (analyzer == null ? '' : ' · analyzer ' + (analyzer ? 'ON' : 'OFF')),
       headline: spec.headline, cells: spec.cells, lines: spec.lines, warn: spec.warn,
       goText: (acc.mode === 'LIVE' ? 'Send LIVE · ' : 'Send PAPER · ') + spec.title,
-      typeToConfirm: danger ? acc.name.toUpperCase() : null,
+      typeToConfirm: danger ? acc.name.toUpperCase() : null, auto,
       run: () => oaCall(acc, spec.endpoint, spec.body, { approval: spec.title + ' · ' + acc.name + (acc.mode === 'LIVE' ? ' LIVE' : ' PAPER') }),
     });
     if (!res.confirmed) return { status: 'declined', message: 'The user did not confirm. Nothing was sent.' };
-    if (res.error) return { status: 'failed_after_confirmation', account: acc.name, error: res.error };
+    if (res.error) return { status: auto ? 'failed' : 'failed_after_confirmation', account: acc.name, error: res.error };
     const j = res.result || {};
     H.toast(acc.name + ': ' + spec.title.toLowerCase() + ' sent' + (j.orderid ? ' · ' + j.orderid : ''));
-    return { status: 'sent_after_user_confirmation', account: acc.name, mode: acc.mode, action: kind, orderid: j.orderid, response: j };
+    return { status: auto ? 'sent' : 'sent_after_user_confirmation', account: acc.name, mode: acc.mode, action: kind, orderid: j.orderid, response: j };
   };
 
   // ---------------- MCP ----------------
@@ -305,9 +306,9 @@
         { type: 'object', properties: { account: { type: 'string', enum: accs.map((a) => a.id) }, action: { type: 'string', enum: Object.keys(OA_READ) }, symbol: { type: 'string' }, exchange: { type: 'string', enum: ['NSE', 'BSE', 'NFO', 'BFO', 'MCX', 'CDS', 'BCD', 'NSE_INDEX', 'BSE_INDEX'] }, interval: { type: 'string' }, start_date: { type: 'string', description: 'YYYY-MM-DD' }, end_date: { type: 'string', description: 'YYYY-MM-DD' }, product: { type: 'string' }, orderid: { type: 'string' }, query: { type: 'string' }, instrumenttype: { type: 'string' }, positions: { type: 'array', items: { type: 'object' } } }, required: ['account', 'action'] },
         oaRead, { label: 'Checking broker', sum: (a) => a.account + ' · ' + a.action + (a.symbol ? ' ' + a.symbol : '') });
       const ord = { type: 'object', properties: { symbol: { type: 'string' }, exchange: { type: 'string' }, action: { type: 'string', enum: ['BUY', 'SELL'] }, quantity: { type: 'integer' }, product: { type: 'string', enum: ['MIS', 'CNC', 'NRML'] }, pricetype: { type: 'string', enum: ['MARKET', 'LIMIT', 'SL', 'SL-M'] }, price: { type: 'number' }, trigger_price: { type: 'number' } } };
-      add('openalgo_trade', 'Draft a trading action as a full-screen ticket. NOTHING is sent unless the user taps confirm AND passes fingerprint/PIN on the phone; you cannot confirm it yourself. Use only when the user asks for that action. kind: place | smart (position_size = target net position) | basket (orders[]) | split (splitsize) | modify (orderid + full new order fields) | cancel (orderid) | cancel_all | close_all (square off every position) | analyzer (mode true = paper ON, false = live). Wisdom orders are refused unless its analyzer (paper) mode is on. Never retry a declined ticket.',
+      add('openalgo_trade', 'Send a trading action to the broker. It EXECUTES IMMEDIATELY with no confirmation step (unless Shoeb turned order confirmations on in Settings › Safety, then it opens a ticket he taps). Use only when he asks for that action, with exactly the details he gave. kind: place | smart (position_size = target net position) | basket (orders[]) | split (splitsize) | modify (orderid + full new order fields) | cancel (orderid) | cancel_all | close_all (square off every position) | analyzer (mode true = paper ON, false = live). Wisdom orders are refused unless its analyzer (paper) mode is on. Never retry a declined or failed order without asking him.',
         { type: 'object', properties: Object.assign({ account: { type: 'string', enum: accs.map((a) => a.id) }, kind: { type: 'string', enum: Object.keys(TRADE_KINDS) }, position_size: { type: 'integer' }, splitsize: { type: 'integer' }, orderid: { type: 'string' }, mode: { type: 'boolean' }, orders: { type: 'array', items: ord } }, ord.properties), required: ['account', 'kind'] },
-        (a) => H.trade(a.kind, a), { label: 'Trade ticket', sum: (a) => a.account + ' · ' + a.kind + (a.symbol ? ' ' + (a.action || '') + ' ' + (a.quantity || '') + ' ' + a.symbol : ''), write: true });
+        (a) => H.trade(a.kind, a, { auto: !H.askFirst('askTrades') }), { label: 'Trade', sum: (a) => a.account + ' · ' + a.kind + (a.symbol ? ' ' + (a.action || '') + ' ' + (a.quantity || '') + ' ' + a.symbol : ''), write: true });
     }
     if (H.opsTools) { try { await H.opsTools(add, t); } catch (e) { console.error(e); } }
     if (H.accountTools) { try { await H.accountTools(add, t); } catch (e) { console.error(e); } }
@@ -319,7 +320,7 @@
           if (tool._write && s.readOnly) continue;
           const name = toolName(s.id, tool.name);
           const params = tool.inputSchema && tool.inputSchema.type ? tool.inputSchema : { type: 'object', properties: {} };
-          add(name, '[' + s.name + '] ' + (tool.description || tool.title || tool.name).slice(0, 900) + (tool._write ? ' (needs the user\'s on-screen confirmation)' : ''), params, async (a) => {
+          add(name, '[' + s.name + '] ' + (tool.description || tool.title || tool.name).slice(0, 900) + (tool._write ? ' (runs immediately; it changes things)' : ''), params, async (a) => {
             const doCall = async () => {
               const opts = tool._write ? { approval: s.name + ': ' + (tool.title || tool.name) } : undefined;
               const c = mcpClients[s.id] || (await H.mcp.connect(s.id), mcpClients[s.id]);
@@ -328,7 +329,7 @@
             };
             let r;
             if (tool._write) {
-              const res = await H.ui.confirmAction({ title: s.name + ': ' + (tool.title || tool.name), server: s, tool, args: a, run: doCall });
+              const res = await H.ui.confirmAction({ title: s.name + ': ' + (tool.title || tool.name), server: s, tool, args: a, run: doCall, auto: !H.askFirst('askTools') });
               if (!res.confirmed) return { status: 'declined', message: 'The user did not confirm.' };
               if (res.error) return { error: res.error };
               r = res.result;
@@ -342,12 +343,12 @@
     return { defs, run };
   };
 
-  H.runTool = async function (registry, call) {
+  H.runTool = async function (registry, call, ctx) {
     const r = registry.run[call.function.name];
     let args = {};
     try { args = call.function.arguments ? JSON.parse(call.function.arguments) : {}; } catch (_) { return { error: 'Arguments were not valid JSON' }; }
     if (!r) return { error: 'Unknown tool ' + call.function.name };
-    return r.fn(args);
+    return r.fn(args, ctx);
   };
   H.clip = clip;
 })();

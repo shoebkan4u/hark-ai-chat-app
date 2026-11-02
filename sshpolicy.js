@@ -210,7 +210,8 @@
       /(^|[\s'"=:;&|(/~])wisdom(\/|\s|$|['";&|)])/i.test(c) ||
       /(~|\$HOME|\$\{HOME\}|\/home\/[^/\s]+)\/wisdom\b/i.test(c);
   }
-  const needsTicket = (c, askChanges) => !classify(c).readOnly && (askChanges || isProtected(c));
+  // 1.1.8: no ticket at all unless the user turned "Ask before SSH commands that change things" on; protected commands included.
+  const needsTicket = (c, askChanges) => !!askChanges && !classify(c).readOnly;
   const SECRET_NAME = /key|token|secret|pass|pwd|auth|cred/i;
   const ENV_LINE = /^(\s*(?:export\s+)?)([A-Za-z_][A-Za-z0-9_.-]*)(\s*=\s*)(.+)$/;
   const maskLine = (line) => { const m = ENV_LINE.exec(line); if (!m || !SECRET_NAME.test(m[2]) || !m[4].trim()) return line; return m[1] + m[2] + m[3] + '••••'; };
