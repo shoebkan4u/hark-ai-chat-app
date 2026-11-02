@@ -44,7 +44,11 @@
           row(icon.upload, 'Import from Hark', 'Encrypted file with keys and knowledge', SECTIONS.import),
           row(icon.chat, 'Models', H.modelLabel(H.settings.model) + ' · auto-fallback ' + (H.settings.autoFallback ? 'on' : 'off'), SECTIONS.models),
           row(icon.chart, 'Brokers (OpenAlgo)', H.settings.openalgo.map((a) => a.name).join(' · '), SECTIONS.brokers),
-          row(icon.plug, 'MCP servers', H.settings.mcpServers.length + ' configured', SECTIONS.mcp)),
+          row(icon.plug, 'MCP servers', H.settings.mcpServers.length + ' configured', SECTIONS.mcp),
+          ...(H.accountsUI ? [
+            row(icon.chat, 'Gmail', H.accountsUI.summary().gmail, () => H.accountsUI.gmail()),
+            row(icon.send, 'Telegram', 'OpenClaw bot ' + H.accountsUI.summary().telegram, () => H.accountsUI.telegram()),
+            row(icon.key, 'Saved logins', H.accountsUI.summary().logins, () => H.accountsUI.logins())] : [])),
         sec('Personal'), el('div', { class: 'card' },
           row(icon.brain, 'Memory', H.memory.list().length + ' items, encrypted on this phone', SECTIONS.memory),
           row(icon.doc, 'Knowledge', H.settings.knowledge ? Math.round(H.settings.knowledge.length / 100) / 10 + 'k chars of background' : 'None imported', SECTIONS.knowledge),

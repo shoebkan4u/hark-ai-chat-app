@@ -19,7 +19,7 @@
       const id = newId(fnName);
       handlers.set(id, (type, data) => {
         handlers.delete(id);
-        if (type === 'err') reject(new Error((data && data.message) || 'Native error'));
+        if (type === 'err') reject(H.nativeError(data));
         else resolve(data);
       });
       try { N[fnName](id, ...args); } catch (e) { handlers.delete(id); reject(e); }
@@ -35,7 +35,7 @@
       const id = newId(fnName);
       handlers.set(id, (type, data) => {
         handlers.delete(id);
-        if (type === 'err') { const e = new Error((data && data.message) || 'Native error'); if (data && data.hostKey) { e.hostKey = data.hostKey; e.keyType = data.keyType; } reject(e); }
+        if (type === 'err') { const e = H.nativeError(data); if (data && data.hostKey) { e.hostKey = data.hostKey; e.keyType = data.keyType; } reject(e); }
         else resolve(data);
       });
       try { O[fnName](id, ...args); } catch (e) { handlers.delete(id); reject(e); }
@@ -65,6 +65,41 @@
     return keys.map(() => 'browser');
   };
   H.nativeCallRaw = (id, fn) => handlers.set(id, fn);
+
+  // ---------------- dropped connections ----------------
+  /**
+   * 'dropped' | 'timeout' | null. Android kills sockets when the app goes to the background
+   * (ECONNABORTED, "Software caused connection abort"); the 1.1.7 shell tags those errors with a code,
+   * older shells only send the raw message.
+   */
+  const DROP_RE = /software caused connection abort|ECONNABORTED|ECONNRESET|EPIPE|connection reset|broken pipe|socket (is )?closed|SocketException|connection (was )?(closed|aborted|dropped)|stream (was )?reset|unexpected end of stream|broken transport|encountered EOF|network connection was lost/i;
+  const TIMEOUT_RE = /timed? ?out\b|ETIMEDOUT|SocketTimeoutException|\btimeout\b/i;
+  H.netErr = function (e) {
+    if (!e) return null;
+    if (e.name === 'AbortError') return null;
+    if (e.code === 'dropped' || e.code === 'timeout') return e.code;
+    if (e.status) return null; // an HTTP-level error (e.g. 504 Gateway Timeout) is a server answer, not a dropped link
+    const m = String(e.message || e);
+    if (/Unable to resolve host|UnknownHost|Connection refused|ECONNREFUSED/i.test(m)) return null;
+    if (DROP_RE.test(m)) return 'dropped';
+    if (TIMEOUT_RE.test(m)) return 'timeout';
+    return null;
+  };
+  H.nativeError = (d) => { const e = new Error((d && d.message) || 'Native error'); if (d && d.code) e.code = d.code; if (d && d.readOnly != null) e.readOnly = d.readOnly; return e; };
+  /** App in the foreground? Native onResume/onPause events (1.1.7+) and page visibility. */
+  H.appFg = !(typeof document !== 'undefined' && document.hidden);
+  const fgWaiters = [];
+  const setFg = (fg) => { H.appFg = fg; if (fg) fgWaiters.splice(0).forEach((f) => f()); };
+  H.onNative((type, d) => { if (type === 'app' && d) setFg(!!d.foreground); });
+  if (typeof document !== 'undefined') document.addEventListener('visibilitychange', () => setFg(!document.hidden));
+  /** Resolves once the app is in the foreground (at once if it already is), or when signal aborts. */
+  H.whenForeground = (signal) => new Promise((res) => {
+    if (H.appFg) return res();
+    fgWaiters.push(res);
+    if (signal) signal.addEventListener('abort', () => res());
+  });
+  /** Keep the process (foreground service + wake lock) alive while a reply or command runs. */
+  H.keepAlive = (tag, on) => { try { if (N && N.keepAlive) N.keepAlive(String(tag), !!on); } catch (_) {} };
   H.nativeDone = (id) => handlers.delete(id);
 
   // ---------------- vault ----------------
@@ -185,7 +220,7 @@
           const id = newId('h');
           handlers.set(id, (type, data) => {
             handlers.delete(id);
-            if (type === 'err') return reject(new Error(data.message));
+            if (type === 'err') return reject(H.nativeError(data));
             const res = { status: data.status, headers: lowerHeaders(data.headers), text: data.text || '' };
             res.json = () => JSON.parse(res.text);
             resolve(res);
@@ -214,7 +249,7 @@
             if (type === 'head') { head = { status: data.status, headers: lowerHeaders(data.headers) }; return; }
             if (type === 'chunk') { if (head && head.status >= 400) errText += data.t; else onChunk(data.t); return; }
             handlers.delete(id);
-            if (type === 'err') return reject(new Error(data.message));
+            if (type === 'err') return reject(H.nativeError(data));
             resolve(Object.assign({ status: 0, headers: {} }, head, { text: errText }));
           });
           if (o.signal) o.signal.addEventListener('abort', () => { N.httpAbort(id); handlers.delete(id); resolve(Object.assign({ status: 0, headers: {} }, head, { aborted: true, text: '' })); });

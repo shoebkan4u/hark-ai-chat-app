@@ -318,6 +318,7 @@
         r.model = model; r.switched = model !== full ? { from: full, to: model } : null;
         return r;
       } catch (e) {
+        if (H.netErr && H.netErr(e)) throw e; // a dropped link is retried by the caller, not a reason to switch models
         const canFallback = H.settings.autoFallback && (e.code === 'exhausted' || e.code === 'nokey' || e.code === 'native' || (e.status && e.status >= 500) || /network|timeout|Unable to resolve|failed to connect/i.test(e.message));
         if (!canFallback) throw e;
         const needVision = messages.some((m) => m.images && m.images.length);

@@ -310,6 +310,7 @@
         (a) => H.trade(a.kind, a), { label: 'Trade ticket', sum: (a) => a.account + ' · ' + a.kind + (a.symbol ? ' ' + (a.action || '') + ' ' + (a.quantity || '') + ' ' + a.symbol : ''), write: true });
     }
     if (H.opsTools) { try { await H.opsTools(add, t); } catch (e) { console.error(e); } }
+    if (H.accountTools) { try { await H.accountTools(add, t); } catch (e) { console.error(e); } }
     if (t.mcp) {
       for (const s of H.settings.mcpServers.filter((x) => x.enabled)) {
         let tools = mcpTools[s.id];

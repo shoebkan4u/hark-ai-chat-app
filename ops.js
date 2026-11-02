@@ -43,7 +43,7 @@
         H.nativeCallRaw(id, (type, d) => {
           if (type === 'out') { out += d.t; if (onOut) onOut(d.t); return; }
           H.nativeDone(id);
-          if (type === 'err') reject(new Error(d.message)); else resolve({ code: d.code, output: out, readOnly: d.readOnly, ticketed: d.ticketed });
+          if (type === 'err') reject(H.nativeError(d)); else resolve({ code: d.code, output: out, readOnly: d.readOnly, ticketed: d.ticketed });
         });
         try { O.sshExec(id, vmId, command, tok || '', timeoutSec || 120); } catch (e) { H.nativeDone(id); reject(e); }
       });
@@ -68,15 +68,26 @@
    * ones when Settings › Safety › "Ask before SSH commands that change things" is off and the command isn't protected.
    * Everything else opens the full-screen ticket + fingerprint. Old app shells (before 1.1.6) always need the ticket.
    */
+  /** Result for a dropped SSH link. Read-only commands get a Retry chip; a write is reported as unknown and never re-run. */
+  const dropped = (vm, command, readOnly) => readOnly
+    ? { status: 'connection_dropped', server: vm.name, message: 'The connection dropped twice. The user can tap Retry.', retry: { server: vm.id, command } }
+    : { status: 'connection_dropped', server: vm.name, message: 'The connection dropped while this command was running. It may or may not have finished, and it was NOT re-run. Check its effect with a read-only command before suggesting anything else; never re-run it without the user asking.' };
   H.sshRunTicket = async function (vmId, command, timeoutSec) {
     const vm = ssh.vm(vmId);
     const v = ssh.classify(command);
     if (ssh.nativePolicy() && !v.needsTicket) {
-      try {
+      const run = async () => {
         const r = await ssh.exec(vm.id, command, null, timeoutSec, true);
         const how = v.readOnly ? 'read-only' : 'ran without asking (Safety setting off)';
         return { status: v.readOnly ? 'ran_read_only' : 'ran_without_ticket_by_user_setting', server: vm.name, exit_code: r.code, output: H.clip(r.output, 12000), card: sshCard(vm, command, r, how) };
-      } catch (e) { return { status: 'failed', error: e.message }; }
+      };
+      try { return await run(); } catch (e) {
+        if (!H.netErr(e)) return { status: 'failed', error: e.message };
+        // Only read-only commands are repeated (once, when the app is back in front). Writes are never re-run.
+        if (!v.readOnly) return dropped(vm, command, false);
+        await H.whenForeground(); await H.sleep(400);
+        try { return await run(); } catch (e2) { return H.netErr(e2) ? dropped(vm, command, true) : { status: 'failed', error: e2.message }; }
+      }
     }
     const danger = !v.readOnly && (v.protected || RISKY.test(command));
     const res = await H.ui.ticket({
@@ -87,6 +98,7 @@
       run: () => ssh.exec(vm.id, command, null, timeoutSec),
     });
     if (!res.confirmed) return { status: 'declined', message: 'The user did not confirm. Nothing ran.' };
+    if (res.error && H.netErr({ message: res.error })) return dropped(vm, command, v.readOnly);
     if (res.error) return { status: 'failed_after_confirmation', error: res.error };
     return { status: 'ran_after_user_confirmation', server: vm.name, exit_code: res.result.code, output: H.clip(res.result.output, 12000), card: sshCard(vm, command, res.result, 'confirmed') };
   };
