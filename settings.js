@@ -24,7 +24,7 @@
   const PROVIDER_CHOICES = [
     ['openrouter', 'OpenRouter', 'openrouter.ai'], ['groq', 'Groq', 'api.groq.com'], ['cohere', 'Cohere', 'api.cohere.ai'],
     ['nvidia', 'NVIDIA', 'integrate.api.nvidia.com'], ['gemini', 'Gemini', 'generativelanguage.googleapis.com'], ['xai', 'xAI (Grok)', 'api.x.ai'],
-    ['huggingface', 'Hugging Face', 'huggingface.co'], ['custom', 'Custom / OpenClaw gateway', ''],
+    ['huggingface', 'Hugging Face', 'huggingface.co'], ['cloudflare', 'Cloudflare Workers AI', 'api.cloudflare.com'], ['custom', 'Custom / OpenClaw gateway', ''],
     ['openalgo:tradesmart', 'OpenAlgo TradeSmart', ''], ['openalgo:wisdom', 'OpenAlgo Wisdom', ''],
     ['runner:tradesmart', 'Hark runner · TradeSmart', 'runner-tradesmart.hark.local'], ['runner:wisdom', 'Hark runner · Wisdom', 'runner-wisdom.hark.local'],
     ['ssh', 'SSH keys (app only)', ''], ['ssh-pass', 'SSH key passphrases (app only)', ''], ['oci', 'Oracle Cloud API key (app only)', ''],
@@ -164,10 +164,30 @@
       row(icon.retry, 'Auto-fallback', 'If keys run out or a provider is down, switch to the next recommended model', null, toggle(H.settings.autoFallback, (v) => { H.settings.autoFallback = v; H.saveSettings(); })),
       row(icon.globe, 'Live catalog', n + ' models · refreshed ' + (H.catalog.updated ? new Date(H.catalog.updated).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }) : 'never') + ' · checks on launch and every 12 h', async () => { await H.ui.refreshCatalog(true); redraw(); })),
       el('div', { class: 'note', text: 'OpenRouter shows free models only and uses up to 3 keys in turn; daily free limits reset at 05:30 IST. NVIDIA requests go through the phone (no browser access). Groq may block some networks (Cloudflare 1010).' }),
+      sec('Cloudflare Workers AI'), cloudflareCard(redraw),
+      el('div', { class: 'note', text: 'Free daily allowance. Used last in auto-fallback: Llama 3.3 70B (fast), then Llama 3.1 8B. Create a token at dash.cloudflare.com › My Profile › API Tokens with “Workers AI: Read” (and Edit) for this account.' }),
       sec('Custom OpenAI-compatible endpoint (OpenClaw, Ollama…)'), el('div', { class: 'card', style: { padding: '4px 14px' } }, field('Base URL (ends in /v1)', base)),
       el('div', { class: 'note', text: 'Save the gateway token under Keys → Custom. An OpenClaw gateway that listens only on loopback must be exposed (tunnel/Tailscale) before the phone can reach it.' }),
       sec('Web search model (Gemini)'), el('div', { class: 'card', style: { padding: '4px 14px' } }, field('Model used for Google Search grounding', sm)));
   });
+
+  /** Account id + API token for Cloudflare Workers AI. The token goes straight into the vault (host api.cloudflare.com). */
+  function cloudflareCard(redraw) {
+    const cf = H.settings.cloudflare || (H.settings.cloudflare = { accountId: '' });
+    const acct = el('input', { value: cf.accountId || '', placeholder: '32-character account id', autocapitalize: 'off', spellcheck: 'false', onchange: (e) => { cf.accountId = e.target.value.trim(); H.saveSettings(); } });
+    const tok = el('input', { type: 'password', placeholder: H.vault.has('cloudflare') ? 'Saved · paste to replace' : 'Paste the API token', autocomplete: 'off' });
+    const st = el('div', { class: 'note' });
+    const saved = H.vault.byProvider('cloudflare');
+    return el('div', { class: 'card', style: { padding: '4px 14px 12px' } }, field('Account ID', acct), field('API token', tok),
+      saved.length ? el('div', { class: 'note', text: 'Token in vault: ' + saved.map((k) => k.preview).join(', ') }) : null,
+      el('div', { class: 'btns' }, el('button', { class: 'btn', text: 'Save token', onclick: () => {
+        const v = tok.value.trim(); if (!v) return H.toast('Paste the token first');
+        if (!cf.accountId) return H.toast('Enter the account id first');
+        saved.forEach((k) => H.vault.del(k.id));
+        H.vault.put({ label: 'Cloudflare Workers AI token', provider: 'cloudflare', host: 'api.cloudflare.com', order: 1 }, v);
+        tok.value = ''; H.toast('Saved'); H.ui.refreshCatalog(false); redraw && redraw();
+      } })), st);
+  }
 
   // ---------------- brokers ----------------
   SECTIONS.brokers = () => screen('Brokers & MCP', (b, redraw) => {

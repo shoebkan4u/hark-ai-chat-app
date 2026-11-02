@@ -66,6 +66,19 @@
         return r.json().data.filter((m) => !SKIP_RE.test(m.id) && !/image|imagine/.test(m.id)).map((m) => ({ id: m.id, name: m.id, vision: VISION_RE.test(m.id), tools: true }));
       },
     },
+    cloudflare: {
+      name: 'Cloudflare Workers AI',
+      get account() { return String((H.settings.cloudflare && H.settings.cloudflare.accountId) || '').trim(); },
+      get base() { return 'https://api.cloudflare.com/client/v4/accounts/' + encodeURIComponent(this.account) + '/ai/v1'; },
+      async models(keyRef) {
+        if (!this.account) throw new Error('No Cloudflare account id');
+        const r = await H.net.request({ url: 'https://api.cloudflare.com/client/v4/accounts/' + encodeURIComponent(this.account) + '/ai/models/search?task=Text%20Generation&per_page=200', headers: { Authorization: 'Bearer ' + keyRef } });
+        if (r.status !== 200) throw new Error('HTTP ' + r.status);
+        const prop = (m, k) => ((m.properties || []).find((p) => p.property_id === k) || {}).value;
+        return ((r.json() || {}).result || []).filter((m) => m.name && /^@cf\//.test(m.name) && !SKIP_RE.test(m.name) && !/lora|-awq-|deprecated/i.test(m.name))
+          .map((m) => ({ id: m.name, name: m.name.replace(/^@cf\/[^/]+\//, '') + ' (Cloudflare)', ctx: +prop(m, 'context_window') || undefined, vision: VISION_RE.test(m.name), tools: String(prop(m, 'function_calling')) === 'true' || /llama-3\.3-70b/.test(m.name) }));
+      },
+    },
     custom: {
       name: 'Custom', get base() { return (H.settings.custom.base || '').replace(/\/+$/, ''); },
       async models(keyRef) {
@@ -84,6 +97,8 @@
     'nvidia:mistralai/mistral-large-4-1t-a52b', 'nvidia:minimaxai/minimax-m3.1-flash', 'openrouter:nvidia/nemotron-3.5-lightning:free',
     'groq:qwen/qwen3.8-27b', 'groq:openai/gpt-oss-20b', 'openrouter:nvidia/nemotron-3.5-super-vl:free',
     'nvidia:nvidia/nemotron-3.5-super-vl-120b-a12b', 'cohere:command-a-vision-07-2025',
+    // Last in the fallback order: Cloudflare Workers AI (free daily allowance), 70B first, then 8B.
+    'cloudflare:@cf/meta/llama-3.3-70b-instruct-fp8-fast', 'cloudflare:@cf/meta/llama-3.1-8b-instruct',
   ];
   const SEED = {
     'groq:openai/gpt-oss-120b': { name: 'GPT-OSS 120B', tools: true },
@@ -97,6 +112,8 @@
     'nvidia:minimaxai/minimax-m3.1-flash': { name: 'MiniMax M3.1 Flash', tools: true },
     'nvidia:mistralai/mistral-large-4-1t-a52b': { name: 'Mistral Large 4', tools: true },
     'nvidia:nvidia/nemotron-3.5-super-vl-120b-a12b': { name: 'Nemotron 3.5 Super VL', tools: true, vision: true },
+    'cloudflare:@cf/meta/llama-3.3-70b-instruct-fp8-fast': { name: 'Llama 3.3 70B (Cloudflare)', tools: true },
+    'cloudflare:@cf/meta/llama-3.1-8b-instruct': { name: 'Llama 3.1 8B (Cloudflare)', tools: false },
   };
 
   // ---------------- catalog ----------------
@@ -122,7 +139,7 @@
     let n = m.id.split('/').pop().replace(/:free$/, '');
     return n;
   };
-  H.providerReady = (p) => p === 'custom' ? !!PROVIDERS.custom.base : H.vault.has(p);
+  H.providerReady = (p) => p === 'custom' ? !!PROVIDERS.custom.base : p === 'cloudflare' ? !!PROVIDERS.cloudflare.account && H.vault.has(p) : H.vault.has(p);
   H.recommended = () => RECOMMENDED.filter((id) => H.providerReady(id.split(':')[0]));
 
   /** Refresh the live catalog. Returns {added:[], removed:[]} */
@@ -304,7 +321,7 @@
     throw Object.assign(lastErr || new Error('All keys failed'), { code: 'exhausted' });
   }
   function extractErr(t) {
-    try { const j = JSON.parse(t); const e = j.error || j; return (e.message || e.detail || JSON.stringify(e)).toString().slice(0, 300); } catch (_) { return String(t || '').slice(0, 300); }
+    try { const j = JSON.parse(t); const e = j.error || (j.errors && j.errors[0]) || j; return (e.message || e.detail || JSON.stringify(e)).toString().slice(0, 300); } catch (_) { return String(t || '').slice(0, 300); }
   }
 
   /** Complete with automatic model fallback when keys are exhausted or the provider is down. */

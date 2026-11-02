@@ -103,7 +103,7 @@
   const PH = (id) => '{{vault:' + id + '}}';
   const PROVIDER_HOSTS = {
     openrouter: ['openrouter.ai'], groq: ['api.groq.com'], cohere: ['api.cohere.ai', 'api.cohere.com'],
-    nvidia: ['integrate.api.nvidia.com'], gemini: ['generativelanguage.googleapis.com'], xai: ['api.x.ai'], huggingface: ['huggingface.co'],
+    nvidia: ['integrate.api.nvidia.com'], gemini: ['generativelanguage.googleapis.com'], xai: ['api.x.ai'], huggingface: ['huggingface.co'], cloudflare: ['api.cloudflare.com'],
   };
   const webVault = {
     load() { try { return JSON.parse(localStorage.getItem('hark.webvault') || '{"index":[],"v":{}}'); } catch (_) { return { index: [], v: {} }; } },
@@ -296,6 +296,8 @@
       { id: 'dhan', name: 'Dhan', url: 'https://mcp.dhan.co/mcp', enabled: false, readOnly: true, trading: true },
     ],
     custom: { base: '', name: 'Custom (OpenAI-compatible)' },
+    // Cloudflare Workers AI (OpenAI-compatible). The account id is not a secret; the API token lives only in the vault.
+    cloudflare: { accountId: '76be185864dd8975a52803c507e4c048' },
     projects: [], tasks: [], knowledge: '',
     // Settings › Safety (1.1.8): everything the AI sends or runs goes out at once. Each switch brings back a confirmation.
     safety: { askTrades: false, askCloud: false, askTools: false, askEmail: false }, widgetSource: '', lastConnections: null,
