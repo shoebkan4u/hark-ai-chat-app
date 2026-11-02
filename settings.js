@@ -52,6 +52,7 @@
           row(icon.speak, 'Voice', 'Auto-read replies ' + (H.settings.voice.autoSpeak ? 'on' : 'off'), SECTIONS.voice),
           row(icon.widget, 'Home screen widgets', 'Quick ask · P&L', SECTIONS.widgets)),
         sec('App'), el('div', { class: 'card' },
+          row(icon.shield, 'Safety', 'When Shoeb AI asks before acting', SECTIONS.safety),
           row(icon.shield, 'Security & privacy', 'How keys and data are protected', SECTIONS.security),
           row(icon.info, 'About & updates', 'Web ' + H.version + (N ? ' · app ' + N.version() : ''), SECTIONS.about)));
     });
@@ -337,6 +338,25 @@
       el('div', { class: 'card', style: { padding: '4px 14px 12px' } }, field('P&L widget account', sel)));
   });
 
+  SECTIONS.safety = () => screen('Safety', (b, redraw) => {
+    const ssh = H.ssh;
+    const native = !!(ssh && ssh.nativePolicy && ssh.nativePolicy());
+    const pol = native ? ssh.policy() : { askChanges: true };
+    const st = el('div', { class: 'note' });
+    b.append(sec('SSH commands'), el('div', { class: 'card' },
+      row(icon.check || icon.shield, 'Read-only commands run directly', 'free, df, ps, ls, cat, grep, logs, docker ps, systemctl status, journalctl, curl GET to localhost… No ticket, no fingerprint; output shows in the chat.', null),
+      row(icon.shield, 'Ask before SSH commands that change things', native ? (pol.askChanges ? 'On — ticket + fingerprint/PIN for anything that isn’t read-only' : 'Off — changing commands run directly, except the protected ones below') : 'Needs Shoeb AI 1.1.6 or newer', null,
+        native ? toggle(pol.askChanges, async (v, inp) => {
+          try { const r = await ssh.setAskChanges(v); inp.checked = !!r.askChanges; if (!v && r.askChanges) st.textContent = 'Not changed — fingerprint/PIN wasn’t confirmed.'; else redraw(); }
+          catch (e) { inp.checked = !v; st.textContent = e.message; }
+        }) : null)),
+      st,
+      el('div', { class: 'note', text: 'Always ask, even with this off: rm -rf /, reboot/shutdown, stopping or removing openalgo containers, and anything touching ~/openalgo-tradesmart or ~/wisdom. Anything the app can’t recognise counts as a change. Turning this off needs your fingerprint/PIN.' }));
+    b.append(sec('Trading & cloud'), el('div', { class: 'card' },
+      row(icon.chart, 'Orders, cancels, closes, analyzer toggle', 'Always a LIVE/PAPER ticket + fingerprint/PIN for the exact request', null),
+      row(icon.globe, 'Oracle Cloud start/stop/reboot/terminate', 'Always a ticket + fingerprint/PIN; terminate also needs the name typed', null)));
+  });
+
   SECTIONS.security = () => screen('Security & privacy', (b) => {
     b.append(el('div', { class: 'content', style: { lineHeight: 1.6, fontSize: '15px' }, html: DOMPurify.sanitize(marked.parse([
       '**Keys** live in an encrypted vault backed by Android Keystore. The web code that draws this app only handles placeholders; the phone inserts a key only into requests to the address that key was saved for, and blanks it out of any response.',
@@ -394,8 +414,8 @@
       const newer = cur && latest && latest.split('.').map(Number).some((x, i, a) => { const c = cur.split('.').map(Number); for (let k = 0; k < a.length; k++) { if ((a[k] || 0) !== (c[k] || 0)) return (a[k] || 0) > (c[k] || 0); } return false; });
       const asset = (j.assets || []).find((a) => /\.apk$/.test(a.name));
       if (newer && asset) {
-        const go = await H.ui.modal('App update available', 'Version ' + H.esc(latest) + ' is ready (you have ' + H.esc(cur) + '). Most changes arrive automatically; this one updates the Android shell.', [['Later', false, 'ghost'], ['Download', true]]);
-        if (go) H.openExternal(asset.browser_download_url);
+        if (manual) H.openExternal(asset.browser_download_url);
+        else if (localStorage.getItem('hark.apknote') !== latest) { localStorage.setItem('hark.apknote', latest); H.toast('Shoeb AI ' + latest + ' is out — Settings › Check for a new app version', 5000); }
         return 'Version ' + latest + ' available';
       }
       return 'You’re up to date (' + (cur || 'browser') + '; latest ' + (latest || '?') + ')';

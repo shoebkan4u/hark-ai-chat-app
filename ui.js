@@ -5,8 +5,27 @@
   const { el, $, icon } = { el: H.el, $: H.$, icon: H.icon };
   const N = window.HarkNative || null;
   const ui = (H.ui = {});
-  const S = { chat: null, abort: null, busy: false, pending: [], overlays: [], drawerOpen: false, voice: null };
+  // runs: replies in flight, keyed by assistant message id → { ctrl, chat, am }. Up to MAX_RUNS stream at once
+  // (each with its own tools and its own Stop); the rest wait in queue and show as "Queued".
+  const MAX_RUNS = 3;
+  const S = { chat: null, runs: new Map(), queue: [], live: new Map(), active: 0, pending: [], overlays: [], drawerOpen: false, voice: null };
+  Object.defineProperty(S, 'busy', { get: () => S.runs.size > 0 });
   H.state = S;
+  /** Minimal "thinking" spinner: three dots orbiting, 14px (CSS: .orbit). Replaces the old brain icon. */
+  const ORBIT = '<span class="orbit" aria-hidden="true"><i></i><i></i><i></i></span>';
+  const isRunning = (m) => !!(m && S.runs.has(m.id));
+  const chatBusy = (c) => !!c && [...S.runs.values()].some((r) => r.chat === c);
+  function abortRun(id) {
+    const r = S.runs.get(id); if (!r) return;
+    r.ctrl.abort();
+    const qi = S.queue.findIndex((q) => q.id === id);
+    if (qi >= 0) { const q = S.queue.splice(qi, 1)[0]; q.res(false); }
+  }
+  ui.abortRun = abortRun;
+  function acquireSlot(id) {
+    return new Promise((res) => { if (S.active < MAX_RUNS) { S.active++; res(true); } else S.queue.push({ id, res }); });
+  }
+  function releaseSlot() { S.active--; const n = S.queue.shift(); if (n) { S.active++; n.res(true); } }
 
   // ---------------- skeleton ----------------
   function skeleton() {
@@ -48,7 +67,6 @@
   function updateSend() {
     const has = $('#input').value.trim() || S.pending.length;
     const sb = $('#sendBtn'), vb = $('#voiceBtn');
-    if (S.busy) { sb.classList.remove('hidden'); sb.classList.add('stop'); sb.innerHTML = icon.stop; sb.setAttribute('aria-label', 'Stop'); vb.classList.add('hidden'); return; }
     sb.classList.remove('stop'); sb.innerHTML = icon.send; sb.setAttribute('aria-label', 'Send');
     sb.classList.toggle('hidden', !has); vb.classList.toggle('hidden', !!has);
     const t = H.settings.tools; $('#toolsBtn').classList.toggle('on', !!(t.web || t.openalgo || t.mcp));
@@ -122,7 +140,6 @@
   H.onBack = () => {
     if (S.overlays.length) { closeOverlay(S.overlays[S.overlays.length - 1]); return true; }
     if (S.drawerOpen) { closeDrawer(); return true; }
-    if (S.busy && S.abort) { S.abort.abort(); return true; }
     return false;
   };
   ui.sheet = function (title, build) {
@@ -164,14 +181,12 @@
   // ---------------- chats ----------------
   function blankChat(projectId) { return { id: H.newId('c'), title: '', created: Date.now(), updated: Date.now(), projectId: projectId || null, messages: [] }; }
   function newChat(projectId) {
-    if (S.busy && S.abort) S.abort.abort();
     S.chat = blankChat(projectId); S.pending = []; renderPending(); renderThread(); setModelBtn();
     const ta = $('#input'); ta.value = ''; autosize(ta); updateSend();
   }
   ui.newChat = newChat;
   async function openChat(id) {
-    if (S.busy && S.abort) S.abort.abort();
-    const c = await H.chats.get(id); if (!c) return;
+    const c = S.live.get(id) || await H.chats.get(id); if (!c) return;
     S.chat = c; renderThread(); setModelBtn(); scrollBottom(true);
   }
   ui.openChat = openChat;
@@ -271,6 +286,8 @@
     return node;
   }
   function fillMsg(node, m, streaming) {
+    streaming = streaming || isRunning(m);
+    const wasOpen = new Set([...node.querySelectorAll('details[data-k]')].filter((d) => d.open).map((d) => d.dataset.k));
     node.innerHTML = '';
     if (m.role === 'user') {
       if (m.atts && m.atts.length) node.append(el('div', { class: 'atts' }, m.atts.map(attView)));
@@ -278,11 +295,27 @@
       return;
     }
     if (m.reasoning) {
-      const d = el('details', { class: 'reason' }, el('summary', { html: icon.brain + '<span>' + (streaming && !m.content ? 'Thinking…' : 'Thought process') + '</span>' }), el('div', { class: 'rbody', text: m.reasoning }));
+      const thinking = streaming && !m.content;
+      const d = el('details', { class: 'reason', 'data-k': 'r' }, el('summary', { html: thinking ? ORBIT + '<span>Thinking</span>' : '<span>Thought process</span>' }), el('div', { class: 'rbody', text: m.reasoning }));
+      if (wasOpen.has('r')) d.open = true;
       node.append(d);
     }
-    (m.steps || []).forEach((s) => node.append(el('div', { class: 'tool ' + (s.state || '') },
-      el('span', { class: 'dot' }), el('span', { class: 'tname', text: s.label }), el('span', { class: 'tsum', text: s.sum || '' }))));
+    (m.steps || []).forEach((s, i) => {
+      const row = el('div', { class: 'tool ' + (s.state || '') }, el('span', { class: 'dot' }), el('span', { class: 'tname', text: s.label }), el('span', { class: 'tsum', text: s.sum || '' }));
+      if (!s.card) { node.append(row); return; }
+      // Command output card: collapsed by default, tap to see the output.
+      const c = s.card;
+      const d = el('details', { class: 'outcard', 'data-k': 's' + i },
+        el('summary', null, row),
+        el('div', { class: 'ocmd', text: '$ ' + c.command }),
+        el('pre', { class: 'oout', text: (c.output || '(no output)') + '\n[exit ' + c.code + (c.how ? ' · ' + c.how : '') + ']' }),
+        el('div', { class: 'btns' }, el('button', { class: 'mini', text: 'Copy output', onclick: () => H.copy(c.output || '') })));
+      if (wasOpen.has('s' + i)) d.open = true;
+      node.append(d);
+    });
+    if (isRunning(m)) node.append(el('div', { class: 'runctl' },
+      m.queued ? el('span', { class: 'note', text: 'Queued — starts when another reply finishes' }) : null,
+      el('button', { class: 'mini stopone', 'aria-label': m.queued ? 'Cancel' : 'Stop this reply', html: icon.stop + '<span>' + (m.queued ? 'Cancel' : 'Stop') + '</span>', onclick: () => abortRun(m.id) })));
     (m.charts || []).forEach((c) => { if (H.chartCard) node.append(H.chartCard(c)); });
     if (m.switched) node.append(el('div', { class: 'meta-line', text: 'Switched to ' + H.modelLabel(m.switched.to) + ' (' + m.switched.why.slice(0, 90) + ')' }));
     const content = el('div', { class: 'content' });
@@ -291,7 +324,7 @@
       if (streaming) { const last = content.lastElementChild || content; (last.tagName === 'PRE' || last.classList.contains('codeblock') ? content : last).append(el('span', { class: 'cursor' })); }
       wireContent(content);
     } else if (streaming && !m.error) {
-      content.append(el('div', { class: 'thinking', html: H.markSvg + '<span>' + (m.steps && m.steps.length ? 'Working…' : 'Thinking…') + '</span>' }));
+      if (!m.queued && !m.reasoning) content.append(el('div', { class: 'thinking', html: ORBIT + '<span>' + (m.steps && m.steps.length ? 'Working' : 'Thinking') + '</span>' }));
     }
     node.append(content);
     longPress(content, (x, y) => msgMenu(x, y, m));
@@ -331,14 +364,14 @@
     ctxMenu(x, y, items);
   }
   function editUser(m) {
-    if (S.busy) return;
+    if (chatBusy(S.chat)) { H.toast('Wait for the replies in this chat to finish (or stop them)'); return; }
     const i = S.chat.messages.indexOf(m); if (i < 0) return;
     S.chat.messages = S.chat.messages.slice(0, i); S.pending = (m.atts || []).slice(); renderPending();
     const ta = $('#input'); ta.value = m.content || ''; autosize(ta); updateSend(); ta.focus();
     saveNow(); renderThread();
   }
   function retry(m) {
-    if (S.busy) return;
+    if (chatBusy(S.chat)) { H.toast('Wait for the replies in this chat to finish (or stop them)'); return; }
     const i = S.chat.messages.indexOf(m); if (i < 0) return;
     S.chat.messages = S.chat.messages.slice(0, i);
     renderThread(); runAssistant();
@@ -399,7 +432,6 @@
 
   // ---------------- send / agent loop ----------------
   function onSend() {
-    if (S.busy) { if (S.abort) S.abort.abort(); return; }
     const ta = $('#input'); const text = ta.value.trim();
     if (!text && !S.pending.length) return;
     ta.value = ''; autosize(ta);
@@ -414,15 +446,16 @@
     return runAssistant(opts);
   };
 
-  function systemPrompt() {
+  function systemPrompt(chat) {
+    chat = chat || S.chat;
     const mem = H.settings.tools.memory ? H.memory.list() : [];
-    const proj = S.chat.projectId && H.settings.projects.find((p) => p.id === S.chat.projectId);
+    const proj = chat.projectId && H.settings.projects.find((p) => p.id === chat.projectId);
     const accs = H.oaAccounts();
     let s = 'You are Shoeb AI, Shoeb\'s personal AI assistant in his Android app. Be warm, direct and concise: answer first, then detail only if useful. Use Markdown (short paragraphs, lists, tables when they help). For long code or documents use fenced code blocks with a language tag.\n';
     s += 'Current date and time: ' + H.istNow() + ' (IST, Asia/Kolkata). The user: ' + (H.settings.fullName || 'Shoeb') + ' (call him ' + (H.settings.name || 'Shoeb') + '), in India; amounts in ₹ unless stated.\n';
     s += 'Use tools when they help: web_search for anything current (cite sources as [1], [2] matching the search results order), fetch_url to read a page.';
     if (accs.length) s += ' Broker tools: openalgo_read reads data. ' + accs.map((a) => a.name + ' is ' + (a.mode === 'LIVE' ? 'a LIVE real-money account' : 'a PAPER (analyzer/sandbox) account')).join('; ') + '. openalgo_trade drafts tickets for place, smart, basket, split, modify, cancel, cancel_all, close_all and analyzer toggle. Use it only when the user asks for that action; always name the account and say LIVE or PAPER. The user must tap confirm and pass fingerprint/PIN; you can never confirm for them. Never claim something was sent unless the tool returned status sent_after_user_confirmation, and never retry a declined ticket.';
-    s += ' Other tools may include backtests (backtest_run, built in; or the runners\' backtest_start/job_status), Oracle Cloud (list, start/stop/reboot/terminate tickets), SSH commands on his servers (ssh_run, ticket + fingerprint), connection checks, and MCP tools from his Hark runners and other servers. Every write goes through a confirmation ticket. Prefer read-only checks first; explain risks before suggesting a LIVE action. Backtest results are not proof of an edge: mention costs and out-of-sample checks.';
+    s += ' Other tools may include backtests (backtest_run, built in; or the runners\' backtest_start/job_status), Oracle Cloud (list, start/stop/reboot/terminate tickets), SSH commands on his servers (ssh_run: read-only commands run at once and their output shows in chat; commands that change things need a ticket + fingerprint), connection checks, and MCP tools from his Hark runners and other servers. Every write goes through a confirmation ticket. Prefer read-only checks first; explain risks before suggesting a LIVE action. Backtest results are not proof of an edge: mention costs and out-of-sample checks.';
     s += '\nNever reveal API keys, passwords or tokens, and never ask the user to paste them into chat (keys go in Settings → Keys).\n';
     if (mem.length) s += '\nThings the user asked you to remember (on-device memory):\n' + mem.map((m) => '- ' + m.text).join('\n') + '\n';
     if (H.settings.tools.memory) s += 'If the user shares a lasting preference or fact, or asks you to remember something, call memory_save.\n';
@@ -430,9 +463,13 @@
     if (proj && proj.instructions) s += '\nProject "' + proj.name + '" instructions:\n' + proj.instructions + '\n';
     return s;
   }
-  function historyMessages(upto) {
+  function historyMessages(chat, upto) {
     const out = [];
-    for (const m of S.chat.messages.slice(0, upto)) {
+    const msgs = chat.messages.slice(0, upto);
+    for (let i = 0; i < msgs.length; i++) {
+      const m = msgs[i];
+      // Another reply still in flight: leave that exchange out so each run stays independent.
+      if (isRunning(m) || (m.role === 'user' && isRunning(msgs[i + 1]))) continue;
       if (m.role === 'user') {
         let c = m.content || '';
         (m.atts || []).filter((a) => a.kind === 'file').forEach((a) => { c += '\n\n<file name="' + a.name + '">\n' + a.text + '\n</file>'; });
@@ -452,18 +489,35 @@
     opts = opts || {};
     const chat = S.chat;
     const am = { id: H.newId('m'), role: 'assistant', content: '', steps: [], trace: [], sources: [], ts: Date.now() };
-    const convo = [{ role: 'system', content: systemPrompt() }].concat(historyMessages(chat.messages.length));
+    const ctrl = new AbortController();
+    const upto = chat.messages.length;
     chat.messages.push(am);
-    $('#thread').append(renderMsg(am)); fillMsg(document.querySelector('.msg[data-id="' + am.id + '"]'), am, true);
-    scrollBottom(true);
-    S.busy = true; S.abort = new AbortController(); updateSend();
+    S.runs.set(am.id, { ctrl, chat, am }); S.live.set(chat.id, chat);
+    if (opts.voice) S.voiceRun = am.id;
+    const onScreen = () => chat === S.chat;
+    if (onScreen()) { $('#thread').append(renderMsg(am)); scrollBottom(true); }
+    am.queued = S.active >= MAX_RUNS;
+    if (am.queued) refreshMsg(am, true);
+    const got = await acquireSlot(am.id);
+    am.queued = false;
+    if (!got || ctrl.signal.aborted) {
+      if (got) releaseSlot();
+      S.runs.delete(am.id); if (!chatBusy(chat)) S.live.delete(chat.id);
+      am.stopped = true; am.content = am.content || '_(Cancelled before it started.)_';
+      refreshMsg(am, false);
+      if (onScreen()) await saveNow(); else await H.chats.put(chat);
+      return am;
+    }
+    const signal = ctrl.signal;
+    const convo = [{ role: 'system', content: systemPrompt(chat) }].concat(historyMessages(chat, upto));
+    refreshMsg(am, true);
     let model = H.settings.model;
     const needVision = convo.some((m) => m.images && m.images.length);
     if (needVision && !H.modelInfo(model).vision) {
       const v = H.recommended().find((id) => H.modelInfo(id).vision) || Object.keys(H.catalog.models).find((id) => H.catalog.models[id].vision && H.providerReady(id.split(':')[0]));
       if (v) { am.switched = { to: v, why: H.modelLabel(model) + ' can’t see images' }; model = v; }
     }
-    let raf = 0; const paint = () => { if (raf) return; raf = requestAnimationFrame(() => { raf = 0; refreshMsg(am, true); scrollBottom(); }); };
+    let raf = 0; const paint = () => { if (raf) return; raf = requestAnimationFrame(() => { raf = 0; refreshMsg(am, true); if (onScreen()) scrollBottom(); }); };
     let prefix = '';
     try {
       const reg = await H.buildTools().catch(() => ({ defs: [], run: {} }));
@@ -472,10 +526,10 @@
           onText: (t) => { am.content = prefix + t; paint(); },
           onReasoning: (t) => { am.reasoning = t; paint(); },
           onSwitch: (from, to, why) => { am.switched = { to, why }; model = to; paint(); },
-        }, S.abort.signal);
+        }, signal);
         am.model = r.model; am.keyLabel = r.keyLabel; model = r.model;
         am.content = prefix + (r.content || '');
-        if (r.finish === 'aborted' || S.abort.signal.aborted) break;
+        if (r.finish === 'aborted' || signal.aborted) break;
         const calls = (r.tool_calls || []).filter((c) => c && c.function && c.function.name);
         if (!calls.length) break;
         const asst = { role: 'assistant', content: r.content || '', tool_calls: calls.map((c) => ({ id: c.id, type: 'function', function: { name: c.function.name, arguments: c.function.arguments || '{}' } })) };
@@ -490,22 +544,25 @@
           try { result = await H.runTool(reg, c); step.state = result && (result.error || ['declined', 'blocked', 'failed_after_confirmation'].includes(result.status)) ? 'fail' : 'ok'; }
           catch (e) { result = { error: e.message }; step.state = 'fail'; step.sum = (step.sum ? step.sum + ' — ' : '') + e.message; }
           if (result && result.chart) { (am.charts = am.charts || []).push(result.chart); result = Object.assign({}, result); delete result.chart; }
+          if (result && result.card) { step.card = result.card; result = Object.assign({}, result); delete result.card; }
           if (result && result.sources) result.sources.forEach((s) => { if (s.url && !am.sources.some((x) => x.url === s.url)) am.sources.push(s); });
           const tm = { role: 'tool', tool_call_id: c.id, content: H.clip(result == null ? 'null' : result) };
           convo.push(tm); am.trace.push(tm); paint();
         }
         if (round === 7) am.content += '\n\n_(Stopped after several tool rounds.)_';
       }
-      if (!am.content.trim() && !S.abort.signal.aborted) am.content = am.steps.length ? '_(The model returned no text after using tools.)_' : '';
-      if (!am.content.trim() && !am.error && !S.abort.signal.aborted) am.error = 'The model sent an empty reply. Try again or pick another model.';
+      if (!am.content.trim() && !signal.aborted) am.content = am.steps.length ? '_(The model returned no text after using tools.)_' : '';
+      if (!am.content.trim() && !am.error && !signal.aborted) am.error = 'The model sent an empty reply. Try again or pick another model.';
     } catch (e) {
       am.error = friendlyError(e);
     } finally {
-      S.busy = false; S.abort = null; updateSend();
+      if (signal.aborted) { am.stopped = true; if (!am.content.trim()) am.content = '_(Stopped.)_'; }
+      S.runs.delete(am.id); releaseSlot(); if (!chatBusy(chat)) S.live.delete(chat.id);
+      if (S.voiceRun === am.id) S.voiceRun = null;
       am.steps.forEach((s) => { if (s.state === 'run') s.state = 'fail'; });
       if (raf) cancelAnimationFrame(raf);
-      refreshMsg(am, false); scrollBottom();
-      if (chat === S.chat) await saveNow(); else await H.chats.put(chat);
+      refreshMsg(am, false); if (onScreen()) scrollBottom();
+      if (onScreen()) await saveNow(); else await H.chats.put(chat);
     }
     if (opts.speak || (H.settings.voice.autoSpeak && !opts.silent)) await ui.speak(am.content || am.error || '');
     return am;
@@ -729,7 +786,7 @@
           if (closed) return;
           if (!t.trim()) return listen();
           said.textContent = t; setState('thinking', 'Thinking…');
-          const am = await ui.send(t, [], { silent: true });
+          const am = await ui.send(t, [], { silent: true, voice: true });
           if (closed) return;
           setState('speaking', 'Speaking…'); said.textContent = plain(am.content || am.error).slice(0, 400);
           await ui.speak(am.content || am.error || 'Sorry, I had no answer.');
@@ -739,7 +796,7 @@
       });
     };
     muteBtn.onclick = () => { muted = !muted; muteBtn.innerHTML = muted ? icon.mute : icon.mic; if (muted) { if (rec) rec.cancel(); rec = null; ui.stopSpeaking(); setState('', 'Muted — tap the mic to talk'); } else listen(); };
-    close = pushOverlay(v, () => { closed = true; if (rec) rec.cancel(); ui.stopSpeaking(); if (S.busy && S.abort) S.abort.abort(); S.voice = null; });
+    close = pushOverlay(v, () => { closed = true; if (rec) rec.cancel(); ui.stopSpeaking(); if (S.voiceRun) abortRun(S.voiceRun); S.voice = null; });
     S.voice = { pause: () => { if (rec) rec.cancel(); rec = null; } };
     if (!S.chat || S.chat.messages.length === 0) S.chat = S.chat || blankChat();
     listen();

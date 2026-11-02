@@ -350,7 +350,8 @@
   window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => H.applyTheme());
 
   // Icons (original, simple strokes)
-  const P = (d, extra) => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"' + (extra || '') + '>' + d + '</svg>';
+  // Every icon carries an explicit 20×20 size so it can never scale to its container (CSS may still resize it).
+  const P = (d, extra) => '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"' + (extra || '') + '>' + d + '</svg>';
   H.icon = {
     menu: P('<path d="M4 7h16M4 12h10M4 17h16"/>'),
     newchat: P('<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/>'),
@@ -362,7 +363,7 @@
     mic: P('<rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/>'),
     wave: P('<path d="M4 10v4M8 7v10M12 4v16M16 8v8M20 10v4"/>'),
     send: P('<path d="M12 19V5M5 12l7-7 7 7"/>', ' stroke-width="2.2"'),
-    stop: '<svg viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="2" fill="currentColor"/></svg>',
+    stop: '<svg width="20" height="20" viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="2" fill="currentColor"/></svg>',
     copy: P('<rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/>'),
     retry: P('<path d="M3 12a9 9 0 0 1 15.5-6.2L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-15.5 6.2L3 16"/><path d="M3 21v-5h5"/>'),
     up: P('<path d="M7 10v11M15 5.9 14 10h5.8a2 2 0 0 1 2 2.3l-1.4 7A2 2 0 0 1 18.4 21H7V10l4.3-7.2A1.7 1.7 0 0 1 14.4 4z"/>'),
@@ -378,7 +379,7 @@
     globe: P('<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/>'),
     chart: P('<path d="M3 3v18h18"/><path d="m7 15 4-4 3 3 5-6"/>'),
     plug: P('<path d="M9 7V3M15 7V3M7 7h10v4a5 5 0 0 1-10 0zM12 16v5"/>'),
-    brain: P('<path d="M12 5a3 3 0 0 0-5.8-1A3 3 0 0 0 4 8a3 3 0 0 0 0 5 3 3 0 0 0 2 5 3 3 0 0 0 6 1zM12 5a3 3 0 0 1 5.8-1A3 3 0 0 1 20 8a3 3 0 0 1 0 5 3 3 0 0 1-2 5 3 3 0 0 1-6 1z"/>'),
+    brain: P('<path d="M6 3h12v18l-6-4-6 4z"/><path d="M9 8h6M9 11h4"/>'), // memory (bookmark); the old brain glyph is gone
     clock: P('<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>'),
     key: P('<circle cx="8" cy="15" r="4"/><path d="m10.8 12.2 9.2-9.2M17 6l3 3M14 9l2 2"/>'),
     trash: P('<path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/>'),
@@ -397,5 +398,5 @@
     more: P('<circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/>'),
     right: P('<path d="m9 6 6 6-6 6"/>'),
   };
-  H.markSvg = '<svg class="mark" viewBox="0 0 48 48"><g fill="var(--accent)"><circle cx="24" cy="8" r="5"/><circle cx="38" cy="18" r="5" opacity=".8"/><circle cx="33" cy="35" r="5" opacity=".6"/><circle cx="15" cy="35" r="5" opacity=".45"/><circle cx="10" cy="18" r="5" opacity=".3"/></g></svg>';
+  H.markSvg = '<svg class="mark" width="40" height="40" viewBox="0 0 48 48"><g fill="var(--accent)"><circle cx="24" cy="8" r="5"/><circle cx="38" cy="18" r="5" opacity=".8"/><circle cx="33" cy="35" r="5" opacity=".6"/><circle cx="15" cy="35" r="5" opacity=".45"/><circle cx="10" cy="18" r="5" opacity=".3"/></g></svg>';
 })();

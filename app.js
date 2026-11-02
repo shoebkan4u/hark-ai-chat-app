@@ -46,8 +46,7 @@
   // First run without keys: point to import.
   if (!H.vault.list().length) {
     setTimeout(async () => {
-      const go = await H.ui.modal('Welcome to Shoeb AI', 'Import the encrypted file Hark gave you to load your API keys, broker connections and background notes. You can also paste keys yourself.', [['Later', false, 'ghost'], ['Import now', true]]);
-      if (go) H.settingsUI.open('import');
+      H.toast('No keys yet — Settings › Import from Hark', 5000);
     }, 600);
   }
 })();

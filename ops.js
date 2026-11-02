@@ -32,35 +32,63 @@
     delVm(id) { needApp(); return H.opsCall('vmDelete', id); },
     saveTunnel(t) { needApp(); return H.opsCall('tunnelSave', JSON.stringify(t)); },
     test(vmId, keyId) { needApp(); return H.opsCall('sshTest', vmId, keyId || ''); },
-    /** Run after approval. Returns {code, output}. onOut gets streamed text. */
-    async exec(vmId, command, onOut, timeoutSec) {
+    /** Run a command. Returns {code, output}. onOut gets streamed text. With direct, no approval is asked:
+        the app itself decides (read-only commands, or changes when Safety › Ask is off and the command isn't protected). */
+    async exec(vmId, command, onOut, timeoutSec, direct) {
       needApp();
-      const key = 'SSH ' + vmId + '\n' + command;
-      const [tok] = await H.approve('Run command on ' + vmId, [key]);
+      let tok = '';
+      if (!direct) [tok] = await H.approve('Run command on ' + vmId, ['SSH ' + vmId + '\n' + command]);
       return new Promise((resolve, reject) => {
         const id = H.newId('sx'); let out = '';
         H.nativeCallRaw(id, (type, d) => {
           if (type === 'out') { out += d.t; if (onOut) onOut(d.t); return; }
           H.nativeDone(id);
-          if (type === 'err') reject(new Error(d.message)); else resolve({ code: d.code, output: out });
+          if (type === 'err') reject(new Error(d.message)); else resolve({ code: d.code, output: out, readOnly: d.readOnly, ticketed: d.ticketed });
         });
-        try { O.sshExec(id, vmId, command, tok, timeoutSec || 120); } catch (e) { H.nativeDone(id); reject(e); }
+        try { O.sshExec(id, vmId, command, tok || '', timeoutSec || 120); } catch (e) { H.nativeDone(id); reject(e); }
       });
     },
+    /** True when the installed app has the native read-only policy (1.1.6+). */
+    nativePolicy() { return !!(O && typeof O.sshClassify === 'function'); },
+    policy() { return this.nativePolicy() ? jparse(O.sshPolicy(), { askChanges: true }) : { askChanges: true }; },
+    /** {readOnly, protected, reason, needsTicket}. Native verdict when the app has it; the web mirror otherwise (display only). */
+    classify(command) {
+      if (this.nativePolicy()) { const v = jparse(O.sshClassify(command), null); if (v) return v; }
+      const P = H.sshPolicy || window.HarkSshPolicy;
+      const v = P ? P.classify(command) : { readOnly: false, reason: 'policy missing' };
+      return { readOnly: v.readOnly, protected: P ? P.isProtected(command) : true, reason: v.reason, needsTicket: true };
+    },
+    setAskChanges(on) { needApp(); return H.opsCall('sshSetAskChanges', !!on); },
   });
   // Ticket for a command (used by the chat tool and the Run screen).
+  const RISKY = /\b(rm|reboot|shutdown|poweroff|halt|mkfs|dd|kill|pkill|systemctl\s+(stop|restart|disable|mask)|docker\s+(rm|stop|restart|kill|compose\s+down)|iptables|ufw|chmod|chown|mv|truncate|crontab|apt|pip|npm|sed\s+-i|tee|>)/;
+  const sshCard = (vm, command, r, how) => ({ kind: 'ssh', server: vm.name || vm.host, command, code: r.code, output: H.clip(stripAnsi(r.output || ''), 20000), how });
+  /**
+   * Run a command (chat tool and the Run screen). Read-only commands run straight away with no ticket; so do changing
+   * ones when Settings › Safety › "Ask before SSH commands that change things" is off and the command isn't protected.
+   * Everything else opens the full-screen ticket + fingerprint. Old app shells (before 1.1.6) always need the ticket.
+   */
   H.sshRunTicket = async function (vmId, command, timeoutSec) {
     const vm = ssh.vm(vmId);
-    const risky = /\b(rm|reboot|shutdown|poweroff|halt|mkfs|dd|kill|pkill|systemctl\s+(stop|restart|disable|mask)|docker\s+(rm|stop|restart|kill|compose\s+down)|iptables|ufw|chmod|chown|mv|truncate|crontab|apt|pip|npm|sed\s+-i|tee|>)/.test(command);
+    const v = ssh.classify(command);
+    if (ssh.nativePolicy() && !v.needsTicket) {
+      try {
+        const r = await ssh.exec(vm.id, command, null, timeoutSec, true);
+        const how = v.readOnly ? 'read-only' : 'ran without asking (Safety setting off)';
+        return { status: v.readOnly ? 'ran_read_only' : 'ran_without_ticket_by_user_setting', server: vm.name, exit_code: r.code, output: H.clip(r.output, 12000), card: sshCard(vm, command, r, how) };
+      } catch (e) { return { status: 'failed', error: e.message }; }
+    }
+    const danger = !v.readOnly && (v.protected || RISKY.test(command));
     const res = await H.ui.ticket({
-      badge: risky ? 'DANGER' : 'ACTION', source: vm.name + ' · SSH ' + vm.user + '@' + vm.host, headline: 'Run a command', code: command,
-      warn: (risky ? 'This command can change or stop things on the server. ' : '') + (vm.id === 'a1' ? 'hark-a1 runs your LIVE TradeSmart trading. ' : '') + 'It runs as ' + vm.user + ' only if you confirm.',
+      badge: v.readOnly ? 'READ-ONLY' : danger ? 'DANGER' : 'ACTION', source: vm.name + ' · SSH ' + vm.user + '@' + vm.host, headline: v.readOnly ? 'Read from the server' : 'Run a command', code: command,
+      warn: v.readOnly ? 'This command only reads. Update Shoeb AI to 1.1.6 and read-only commands run without this step.'
+        : (danger ? 'This command can change or stop things on the server. ' : '') + (vm.id === 'a1' ? 'hark-a1 runs your LIVE TradeSmart trading. ' : '') + 'It runs as ' + vm.user + ' only if you confirm.',
       goText: 'Run on ' + (vm.name || vm.host),
       run: () => ssh.exec(vm.id, command, null, timeoutSec),
     });
     if (!res.confirmed) return { status: 'declined', message: 'The user did not confirm. Nothing ran.' };
     if (res.error) return { status: 'failed_after_confirmation', error: res.error };
-    return { status: 'ran_after_user_confirmation', server: vm.name, exit_code: res.result.code, output: H.clip(res.result.output, 12000) };
+    return { status: 'ran_after_user_confirmation', server: vm.name, exit_code: res.result.code, output: H.clip(res.result.output, 12000), card: sshCard(vm, command, res.result, 'confirmed') };
   };
 
   // ============================================================ Oracle Cloud
@@ -299,14 +327,14 @@
   // Chart (SVG line with zero line)
   H.chartSvg = function (points, w, h) {
     w = w || 340; h = h || 150;
-    if (!points || points.length < 2) return '<svg viewBox="0 0 ' + w + ' ' + h + '"></svg>';
+    if (!points || points.length < 2) return '<svg width="100%" height="' + h + '" viewBox="0 0 ' + w + ' ' + h + '"></svg>';
     const xs = points.map((p) => p[0]), ys = points.map((p) => p[1]);
     const x0 = Math.min(...xs), x1 = Math.max(...xs); let y0 = Math.min(0, ...ys), y1 = Math.max(0, ...ys); if (y1 === y0) y1 = y0 + 1;
     const X = (x) => 6 + (w - 12) * (x - x0) / ((x1 - x0) || 1), Y = (y) => h - 18 - (h - 30) * (y - y0) / (y1 - y0);
     const d = points.map((p, i) => (i ? 'L' : 'M') + X(p[0]).toFixed(1) + ' ' + Y(p[1]).toFixed(1)).join(' ');
     const last = ys[ys.length - 1]; const col = last >= 0 ? 'var(--ok)' : 'var(--danger)';
     const lab = (t) => new Date(t).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: '2-digit', timeZone: 'Asia/Kolkata' });
-    return '<svg class="chart" viewBox="0 0 ' + w + ' ' + h + '" preserveAspectRatio="none">' +
+    return '<svg class="chart" width="100%" height="' + h + '" viewBox="0 0 ' + w + ' ' + h + '" preserveAspectRatio="none">' +
       '<line x1="6" x2="' + (w - 6) + '" y1="' + Y(0).toFixed(1) + '" y2="' + Y(0).toFixed(1) + '" stroke="var(--line)" stroke-dasharray="3 3"/>' +
       '<path d="' + d + ' L' + X(x1).toFixed(1) + ' ' + Y(0).toFixed(1) + ' L' + X(x0).toFixed(1) + ' ' + Y(0).toFixed(1) + 'Z" fill="' + col + '" opacity=".12"/>' +
       '<path d="' + d + '" fill="none" stroke="' + col + '" stroke-width="1.8"/>' +
@@ -333,7 +361,7 @@
     const vms = ssh.vms();
     if (vms.length) {
       add('ssh_servers', 'List Shoeb’s SSH servers (no secrets).', { type: 'object', properties: {} }, () => vms.map((v) => ({ id: v.id, name: v.name, host: v.host, user: v.user, note: v.note })), { label: 'Servers', sum: () => vms.length + ' saved' });
-      add('ssh_run', 'Run a shell command on one of Shoeb’s servers over SSH. Opens a full-screen ticket showing the exact command; it runs only after his tap + fingerprint/PIN. Prefer read-only commands (status, logs, df, free, docker ps, systemctl status, journalctl). Never stop or change trading containers, strategies, timers or OpenClaw unless he explicitly asked. Servers: ' + vms.map((v) => v.id + ' = ' + v.name).join('; '),
+      add('ssh_run', 'Run a shell command on one of Shoeb’s servers over SSH. Read-only commands (status, free, df, ps, ls, cat, grep, logs, docker ps, systemctl status, journalctl, curl GET to localhost…) run immediately and the output shows in chat. Commands that change things open a full-screen ticket and run only after his tap + fingerprint/PIN (unless he turned that off in Safety). Prefer read-only commands (status, logs, df, free, docker ps, systemctl status, journalctl). Never stop or change trading containers, strategies, timers or OpenClaw unless he explicitly asked. Servers: ' + vms.map((v) => v.id + ' = ' + v.name).join('; '),
         { type: 'object', properties: { server: { type: 'string', enum: vms.map((v) => v.id) }, command: { type: 'string' }, timeout_sec: { type: 'integer' } }, required: ['server', 'command'] },
         (a) => H.sshRunTicket(a.server, a.command, a.timeout_sec), { label: 'SSH command', sum: (a) => a.server + ': ' + String(a.command).slice(0, 60), write: true });
     }
