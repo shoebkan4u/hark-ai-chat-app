@@ -343,3 +343,12 @@ details.outcard pre.oout{font-family:ui-monospace,Menlo,monospace;font-size:12px
 .icard .btns{display:flex;gap:8px;margin-top:8px}
 .icard .mini.go{background:var(--ink);color:var(--bg);font-size:13px;padding:6px 14px;font-weight:600}
 .icard .mini.ghost{border:1px solid var(--line);font-size:13px;padding:6px 14px}
+/* agent mode picker (Hark AI / Hermes / Aider) */
+.agentpick{padding:0 4px 6px}
+.agentpick .seg{margin:4px 4px 6px}
+.agentdir{display:flex;flex-direction:column;gap:6px;padding:4px 8px 6px}
+.agentdir small{color:var(--muted);font-size:12px}
+.agentdir input{font-family:var(--mono,ui-monospace,monospace);font-size:13px;padding:8px 10px;border:1px solid var(--line);border-radius:10px;background:var(--card);color:var(--ink)}
+/* 1.1.9 free-model usage numbers in the model picker */
+.opt .t small.use{font-size:11px;color:var(--muted);opacity:.85;margin-top:1px;font-variant-numeric:tabular-nums}
+.opt.zero{opacity:.45}

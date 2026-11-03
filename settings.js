@@ -23,7 +23,9 @@
 
   const PROVIDER_CHOICES = [
     ['openrouter', 'OpenRouter', 'openrouter.ai'], ['groq', 'Groq', 'api.groq.com'], ['cohere', 'Cohere', 'api.cohere.ai'],
-    ['nvidia', 'NVIDIA', 'integrate.api.nvidia.com'], ['gemini', 'Gemini', 'generativelanguage.googleapis.com'], ['xai', 'xAI (Grok)', 'api.x.ai'],
+    ['nvidia', 'NVIDIA', 'integrate.api.nvidia.com'], ['gemini', 'Gemini', 'generativelanguage.googleapis.com'],
+    ['opencode', 'OpenCode Zen (free models)', 'opencode.ai'], ['kilo', 'Kilo (free models)', 'api.kilo.ai'], ['sambanova', 'SambaNova', 'api.sambanova.ai'],
+    ['mistral', 'Mistral (free tier)', 'api.mistral.ai'], ['github', 'GitHub Models', 'models.github.ai'], ['xai', 'xAI (Grok) · paid, not used', 'api.x.ai'],
     ['huggingface', 'Hugging Face', 'huggingface.co'], ['cloudflare', 'Cloudflare Workers AI', 'api.cloudflare.com'], ['custom', 'Custom / OpenClaw gateway', ''],
     ['openalgo:tradesmart', 'OpenAlgo TradeSmart', ''], ['openalgo:wisdom', 'OpenAlgo Wisdom', ''],
     ['runner:tradesmart', 'Hark runner · TradeSmart', 'runner-tradesmart.hark.local'], ['runner:wisdom', 'Hark runner · Wisdom', 'runner-wisdom.hark.local'],
@@ -141,6 +143,7 @@
         });
         H.settings.tools.ops = true;
         if (r.knowledge) H.settings.knowledge = r.knowledge;
+        if (r.cloudflare && r.cloudflare.accountId) H.settings.cloudflare = Object.assign(H.settings.cloudflare || {}, { accountId: r.cloudflare.accountId });
         H.settings.slots = r.slots || [];
         H.saveSettings();
         status.textContent = 'Imported ' + r.imported + ' keys' + (r.knowledge ? ' and your background notes' : '') + '. ' + ((r.vms || []).length ? r.vms.length + ' server(s), ' + (r.tunnels || []).length + ' SSH tunnels' + (r.oci && r.oci.configured ? ', Oracle Cloud' : '') + '. ' : '') + (r.slots && r.slots.length ? r.slots.length + ' empty slots are listed under Keys.' : '');
@@ -163,13 +166,34 @@
       row(icon.chat, 'Default model', H.modelLabel(H.settings.model), () => H.ui.openModelPicker()),
       row(icon.retry, 'Auto-fallback', 'If keys run out or a provider is down, switch to the next recommended model', null, toggle(H.settings.autoFallback, (v) => { H.settings.autoFallback = v; H.saveSettings(); })),
       row(icon.globe, 'Live catalog', n + ' models · refreshed ' + (H.catalog.updated ? new Date(H.catalog.updated).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }) : 'never') + ' · checks on launch and every 12 h', async () => { await H.ui.refreshCatalog(true); redraw(); })),
-      el('div', { class: 'note', text: 'OpenRouter shows free models only and uses up to 3 keys in turn; daily free limits reset at 05:30 IST. NVIDIA requests go through the phone (no browser access). Groq may block some networks (Cloudflare 1010).' }),
+      freeKeysRow(redraw),
+      el('div', { class: 'note', text: 'Free models only: paid models are hidden everywhere (picker, fallback, tasks). OpenRouter and Kilo show only “:free” ids, OpenCode Zen only its free models, Gemini only Flash / Flash-Lite / Gemma. Daily default: Gemini 3.5 Flash. Daily free limits of OpenRouter, Kilo and Cloudflare reset at 05:30 IST. NVIDIA requests go through the phone (no browser access).' }),
       sec('Cloudflare Workers AI'), cloudflareCard(redraw),
-      el('div', { class: 'note', text: 'Free daily allowance. Used last in auto-fallback: Llama 3.3 70B (fast), then Llama 3.1 8B. Create a token at dash.cloudflare.com › My Profile › API Tokens with “Workers AI: Read” (and Edit) for this account.' }),
+      el('div', { class: 'note', text: 'Free daily allowance (10,000 neurons, resets 05:30 IST). Used last in auto-fallback: Llama 3.3 70B (fast), then Llama 3.1 8B (fp8). Create a token at dash.cloudflare.com › My Profile › API Tokens with “Workers AI: Read” (and Edit) for this account.' }),
       sec('Custom OpenAI-compatible endpoint (OpenClaw, Ollama…)'), el('div', { class: 'card', style: { padding: '4px 14px' } }, field('Base URL (ends in /v1)', base)),
       el('div', { class: 'note', text: 'Save the gateway token under Keys → Custom. An OpenClaw gateway that listens only on loopback must be exposed (tunnel/Tailscale) before the phone can reach it.' }),
       sec('Web search model (Gemini)'), el('div', { class: 'card', style: { padding: '4px 14px' } }, field('Model used for Google Search grounding', sm)));
   });
+
+  /**
+   * Settings › Models › Import free keys from hark-a1: the app reads /etc/hark-ai/free-keys.env over its own admin SSH
+   * (sudo cat) and native code stores each key straight into the vault — the values never reach this page.
+   */
+  function freeKeysRow(redraw) {
+    const O = window.HarkOps;
+    const can = !!(O && typeof O.importFreeKeys === 'function');
+    return row(icon.retry, 'Import free keys from hark-a1', can ? 'Gemini, GitHub Models, Cloudflare, OpenCode Zen, Kilo, SambaNova, Mistral — read over SSH straight into the vault' : 'Needs Shoeb AI 1.1.9 or later (or use the v3 import file)', can ? async () => {
+      const vm = H.agents && H.agents.server();
+      if (!vm) return H.toast('Add hark-a1 under Settings › Keys › SSH keys & servers first');
+      H.toast('Reading keys from hark-a1…');
+      try {
+        const r = await H.opsCall('importFreeKeys', vm.id);
+        if (r && r.cloudflareAccountId) { H.settings.cloudflare = Object.assign(H.settings.cloudflare || {}, { accountId: r.cloudflareAccountId }); H.saveSettings(); }
+        H.toast('Imported ' + ((r && r.imported) || 0) + ' free keys' + (r && r.missing && r.missing.length ? ' · missing: ' + r.missing.join(', ') : ''));
+        await H.ui.refreshCatalog(false); redraw && redraw();
+      } catch (e) { H.toast('Import failed: ' + e.message); }
+    } : null);
+  }
 
   /** Account id + API token for Cloudflare Workers AI. The token goes straight into the vault (host api.cloudflare.com). */
   function cloudflareCard(redraw) {
@@ -317,6 +341,14 @@
       if (res.length) b.append(sec('Recent results'), el('div', { class: 'card' }, res.slice(0, 10).map((r) => row(null, r.name + ' · ' + new Date(r.at).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }), r.text.slice(0, 300), () => H.showTaskResult(r)))));
     }
   });
+  // 1.1.9: tasks scheduled with a paid or old default model are re-registered once with their free model.
+  setTimeout(() => {
+    try {
+      if (!N || H.settings.tasks119 || !(H.settings.tasks || []).length) return;
+      H.settings.tasks.forEach((t) => { try { N.scheduleTask(JSON.stringify(taskPayload(t))); } catch (_) {} });
+      H.settings.tasks119 = true; H.saveSettings();
+    } catch (_) {}
+  }, 1500);
   function saveTask(t) {
     H.settings.tasks = H.settings.tasks || [];
     if (!H.settings.tasks.includes(t)) H.settings.tasks.push(t);

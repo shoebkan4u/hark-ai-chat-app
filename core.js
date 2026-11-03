@@ -176,7 +176,7 @@
         const id = this.put({ label: String(s.label).replace(/\s+/g, ' ').trim(), provider: s.provider, host: s.host, order: s.order || 1, type: s.type }, s.value);
         secrets.push({ id, label: s.label, provider: s.provider });
       }
-      return { imported: secrets.length, secrets, slots: bundle.slots || [], openalgo: bundle.openalgo || [], knowledge: bundle.knowledge || '', created: bundle.created, payload: bundle.format, runners: [], vms: [], tunnels: [], oci: {}, browserOnly: true };
+      return { imported: secrets.length, secrets, slots: bundle.slots || [], openalgo: bundle.openalgo || [], knowledge: bundle.knowledge || '', created: bundle.created, payload: bundle.format, cloudflare: bundle.cloudflare || null, runners: [], vms: [], tunnels: [], oci: {}, browserOnly: true };
     },
   };
 
@@ -284,7 +284,7 @@
 
   // ---------------- settings ----------------
   const DEFAULT_SETTINGS = {
-    name: 'Shoeb', fullName: 'Shoeb Khan', theme: 'system', model: 'groq:openai/gpt-oss-120b',
+    name: 'Shoeb', fullName: 'Shoeb Khan', theme: 'system', model: 'gemini:gemini-3.5-flash',
     autoFallback: true, tools: { web: true, openalgo: true, mcp: true, memory: true, ops: true },
     voice: { autoSpeak: false, rate: 1.0, lang: 'en-IN' },
     openalgo: [

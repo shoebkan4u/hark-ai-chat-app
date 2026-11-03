@@ -78,7 +78,8 @@
     b.innerHTML = '';
     const inner = el('span', null);
     if (proj) inner.append(el('span', { class: 'proj-pill', text: proj.name }), el('br'));
-    inner.append(document.createTextNode(H.modelLabel(H.settings.model)));
+    const agentLabel = H.agents && S.chat && H.agents.label(S.chat);
+    inner.append(document.createTextNode(agentLabel || H.modelLabel(H.settings.model)));
     b.append(inner); b.insertAdjacentHTML('beforeend', icon.chev);
   }
   ui.setModelBtn = setModelBtn;
@@ -181,7 +182,7 @@
   // ---------------- chats ----------------
   function blankChat(projectId) { return { id: H.newId('c'), title: '', created: Date.now(), updated: Date.now(), projectId: projectId || null, messages: [] }; }
   function newChat(projectId) {
-    S.chat = blankChat(projectId); S.pending = []; renderPending(); renderThread(); setModelBtn();
+    const prev = S.chat; S.chat = blankChat(projectId); if (prev && prev.agent && prev.agent !== 'hark') { S.chat.agent = prev.agent; S.chat.aiderDir = prev.aiderDir; } S.pending = []; renderPending(); renderThread(); setModelBtn();
     const ta = $('#input'); ta.value = ''; autosize(ta); updateSend();
   }
   ui.newChat = newChat;
@@ -388,7 +389,8 @@
         el('button', { class: 'iconbtn' + (m.rating === 1 ? ' on' : ''), 'aria-label': 'Good response', html: icon.up, onclick: () => rate(m, 1) }),
         el('button', { class: 'iconbtn' + (m.rating === -1 ? ' on' : ''), 'aria-label': 'Bad response', html: icon.down, onclick: () => rate(m, -1) }));
       node.append(acts);
-      if (m.model) node.append(el('div', { class: 'meta-line', text: H.modelLabel(m.model) + (m.keyLabel ? ' · ' + m.keyLabel : '') }));
+      if (m.agent) node.append(el('div', { class: 'meta-line', text: (H.agents ? H.agents.MODES[m.agent.mode] : m.agent.mode) + ' · ' + (m.agent.server || 'hark-a1') }));
+      else if (m.model) node.append(el('div', { class: 'meta-line', text: H.modelLabel(m.model) + (m.keyLabel ? ' · ' + m.keyLabel : '') }));
     }
   }
   function attView(a) {
@@ -556,10 +558,10 @@
     const signal = ctrl.signal;
     const convo = [{ role: 'system', content: systemPrompt(chat) }].concat(historyMessages(chat, upto));
     refreshMsg(am, true);
-    let model = H.settings.model;
+    let model = H.freeModelOr ? H.freeModelOr(H.settings.model) : H.settings.model;
     const needVision = convo.some((m) => m.images && m.images.length);
     if (needVision && !H.modelInfo(model).vision) {
-      const v = H.recommended().find((id) => H.modelInfo(id).vision) || Object.keys(H.catalog.models).find((id) => H.catalog.models[id].vision && H.providerReady(id.split(':')[0]));
+      const v = H.recommended().find((id) => H.modelInfo(id).vision && !(H.usage && H.usage.isZero(id))) || Object.keys(H.catalog.models).find((id) => H.isFree(id) && H.catalog.models[id].vision && H.providerReady(id.split(':')[0]));
       if (v) { am.switched = { to: v, why: H.modelLabel(model) + ' can’t see images' }; model = v; }
     }
     let raf = 0; const paint = () => { if (raf) return; raf = requestAnimationFrame(() => { raf = 0; refreshMsg(am, true); if (onScreen()) scrollBottom(); }); };
@@ -589,6 +591,12 @@
       }
     };
     try {
+      if (H.agents && H.agents.active(chat)) {
+        // Agent mode (Hermes / Aider on hark-a1 over SSH): the agent answers instead of a model.
+        const u = chat.messages[upto - 1] || {};
+        const files = (u.atts || []).filter((a) => a.kind === 'file').map((a) => '\n\n<file name="' + a.name + '">\n' + a.text + '\n</file>').join('');
+        await H.agents.run({ chat, am, signal, paint, prompt: (u.content || '') + files });
+      } else {
       const reg = await H.buildTools().catch(() => ({ defs: [], run: {} }));
       for (let round = 0; round < 8; round++) {
         const r = await callModel(reg);
@@ -616,6 +624,7 @@
           convo.push(tm); am.trace.push(tm); paint();
         }
         if (round === 7) am.content += '\n\n_(Stopped after several tool rounds.)_';
+      }
       }
       if (!am.content.trim() && !signal.aborted) am.content = am.steps.length ? '_(The model returned no text after using tools.)_' : '';
       if (!am.content.trim() && !am.error && !signal.aborted) am.error = 'The model sent an empty reply. Try again or pick another model.';
@@ -649,36 +658,44 @@
     ui.sheet('Model', (b, close) => {
       const q = el('input', { placeholder: 'Search models', style: { border: 0, outline: 0, background: 'transparent', flex: 1, fontSize: '15px' } });
       const list = el('div');
+      if (H.agents && S.chat) b.append(H.agents.pickerBlock(S.chat, close, () => { setModelBtn(); if (S.chat.messages.length) H.chats.put(S.chat).catch(() => {}); }));
       b.append(el('label', { class: 'search', style: { margin: '0 4px 6px' }, html: icon.search }, q), list);
       const newIds = new Set(H.catalog.newIds || []);
       const row = (full) => {
         const m = H.modelInfo(full);
         const sel = full === H.settings.model;
         const badges = (newIds.has(full) ? '<span class="badge new">NEW</span>' : '') + (m.vision ? '<span class="badge">vision</span>' : '') + (m.tools === false ? '<span class="badge">no tools</span>' : '');
-        return el('button', { class: 'opt', onclick: () => { H.settings.model = full; H.saveSettings(); newIds.delete(full); H.catalog.newIds = [...newIds]; localStorage.setItem('hark.catalog', JSON.stringify(H.catalog)); setModelBtn(); close(); } },
-          el('span', { class: 't', html: H.esc(H.modelLabel(full)) + badges + '<small>' + H.esc(H.PROVIDERS[m.provider] ? H.PROVIDERS[m.provider].name : m.provider) + ' · ' + H.esc(m.id) + '</small>' }),
+        const zero = H.quota && H.usage.isZero(full);
+        const use = H.quota ? '<small class="use">' + H.esc(H.quota.line(full)) + '</small>' : '';
+        return el('button', { class: 'opt' + (zero ? ' zero' : ''), 'data-model': full, onclick: () => { if (H.agents && S.chat) H.agents.setMode(S.chat, 'hark'); H.settings.model = full; H.saveSettings(); newIds.delete(full); H.catalog.newIds = [...newIds]; localStorage.setItem('hark.catalog', JSON.stringify(H.catalog)); setModelBtn(); close(); } },
+          el('span', { class: 't', html: H.esc(H.modelLabel(full)) + badges + '<small>' + H.esc(H.PROVIDERS[m.provider] ? H.PROVIDERS[m.provider].name : m.provider) + ' · ' + H.esc(m.id) + '</small>' + use }),
           sel ? el('span', { class: 'check', html: icon.check }) : null);
       };
       const draw = () => {
         list.innerHTML = '';
         const term = q.value.toLowerCase().trim();
         const match = (full) => !term || full.toLowerCase().includes(term) || H.modelLabel(full).toLowerCase().includes(term);
-        const rec = H.recommended().filter(match);
+        // Free models only (1.1.9); models with nothing left today go last, greyed.
+        const zl = (a, b) => (H.usage ? H.usage.isZero(a) - H.usage.isZero(b) : 0);
+        const rec = H.recommended().filter(match).sort(zl);
         if (rec.length) { list.append(el('div', { class: 'mp-group', text: 'Recommended' })); rec.forEach((id) => list.append(row(id))); }
         const by = {};
-        Object.keys(H.catalog.models).forEach((id) => { const p = id.split(':')[0]; if (!H.providerReady(p) || !match(id)) return; (by[p] = by[p] || []).push(id); });
+        Object.keys(H.catalog.models).forEach((id) => { const p = id.split(':')[0]; if (!H.providerReady(p) || !H.isFree(id) || (H.PROVIDERS[p] && H.PROVIDERS[p].paid) || !match(id)) return; (by[p] = by[p] || []).push(id); });
         Object.keys(H.PROVIDERS).forEach((p) => {
           if (!by[p]) return;
-          const ids = by[p].sort((a, b) => (newIds.has(b) - newIds.has(a)) || a.localeCompare(b));
+          const ids = by[p].sort((a, b) => zl(a, b) || (newIds.has(b) - newIds.has(a)) || a.localeCompare(b));
           list.append(el('div', { class: 'mp-group', text: H.PROVIDERS[p].name + ' (' + ids.length + ')' + (H.PROVIDERS[p].note ? ' · ' + H.PROVIDERS[p].note : '') }));
           ids.forEach((id) => list.append(row(id)));
         });
         if (!list.children.length) list.append(el('div', { class: 'note', style: { padding: '12px' }, text: term ? 'No models match.' : 'Add a key in Settings → Keys to see models.' }));
         const errs = Object.entries(H.catalog.errors || {});
-        list.append(el('div', { class: 'note', style: { padding: '8px 12px' }, text: 'Catalog updated ' + (H.catalog.updated ? new Date(H.catalog.updated).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }) : 'never') + (errs.length ? ' · issues: ' + errs.map(([p, e]) => p + ' ' + e).join('; ') : '') }));
+        const qs = H.quota && H.quota.server;
+        list.append(el('div', { class: 'note', style: { padding: '8px 12px' }, text: 'Free models only. Numbers: free limit · left · used today / 7 days (this app' + (qs && !qs.absent && Object.keys(qs.models || {}).length ? ' + hark-a1 ai-quota, ' + new Date(qs.at).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit' }) + ' IST' : '') + '). Catalog updated ' + (H.catalog.updated ? new Date(H.catalog.updated).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }) : 'never') + (errs.length ? ' · issues: ' + errs.map(([p, e]) => p + ' ' + e).join('; ') : '') }));
         list.append(el('button', { class: 'btn ghost', style: { margin: '4px 12px 12px' }, text: 'Refresh model list', onclick: async (e) => { e.target.disabled = true; e.target.textContent = 'Refreshing…'; await ui.refreshCatalog(true); draw(); } }));
       };
       q.oninput = draw; draw();
+      // Server-side usage (hark-a1 ai-quota, cached 30 min); redraw when it arrives.
+      if (H.quota) H.quota.refresh(false).then(() => { if (list.isConnected) draw(); }).catch(() => {});
     });
   }
   ui.openModelPicker = openModelPicker;
