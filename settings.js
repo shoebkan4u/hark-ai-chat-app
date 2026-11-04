@@ -438,10 +438,11 @@
     const fix = (what) => () => { N.approvalsFix(what); setTimeout(redraw, 1500); };
     const yes = (v, okText, badText) => v ? okText : badText;
     b.append(el('div', { class: 'card' },
-      row(icon.chart, 'Trade approval pop-ups', 'Pops up each Hermes LIVE buy with ✅ Buy / ⏭ Skip, Mon–Fri 09:15–15:30 IST', null,
+      row(icon.chart, 'Trade approval pop-ups', 'Pops up each Hermes LIVE buy (✅ Buy / ⏭ Skip) and sell suggestion (🔴 Sell / ✋ Hold) with a chart, Mon–Fri 09:15–15:30 IST', null,
         toggle(st.enabled !== false, (v) => { N.approvalsSet(JSON.stringify({ enabled: !!v })); setTimeout(redraw, 300); })),
       row(icon.globe, 'Server', (st.server || 'hark-a1 isn’t set up — add it under Keys › SSH keys & servers') + ' · admin SSH key from the vault', null),
       row(icon.clock, 'Status', st.enabled === false ? 'Off' : st.running ? 'Watching now (every 15 s)' + (st.lastPoll ? ' · last check ' + new Date(st.lastPoll).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata' }) + ' IST' : '') + (st.lastError ? ' · last error: ' + st.lastError : '') : 'Starts ' + istTime(st.nextOpen) + ' IST', null),
+      typeof N.approvalsPositions === 'function' ? row(icon.chart, 'Hermes positions · Sell now', 'Open Hermes positions with a chart and a 🔴 Sell tap (app 1.1.11+)', () => N.approvalsPositions()) : null,
       row(icon.retry, 'Check hark-a1 now', 'Reads the pending list once (nothing is approved)', async () => {
         out.textContent = 'Checking hark-a1…';
         try { const r = await H.nativeCall('approvalsCheck'); out.textContent = r.pending ? r.pending + ' waiting: ' + r.symbols.join(', ') : 'Connected · nothing waiting'; }
@@ -455,7 +456,7 @@
         row(icon.clock, 'Start at 09:15 by itself', yes(st.exactAlarm, 'Alarms & reminders allowed', 'Tap to allow Alarms & reminders'), fix('exact')),
         row(icon.shield, 'Battery: unrestricted', yes(st.battery, 'Yes', 'Tap so Android doesn’t pause the watcher'), fix('battery')),
         row(icon.speak, 'Sound & vibration', 'Android settings for the “Trade approvals” channel', fix('channel'))),
-      el('div', { class: 'note', text: 'Each pop-up shows the account, quantity, buy price, stop-loss, target, amount, reason and time left. Buy or Skip runs on hark-a1 straight away (no fingerprint) and the pop-up changes to the server’s answer. Requests expire after 5 minutes; answering twice is safe. A small “Watching for Hermes trades” notification stays while it runs and goes away at 15:30.' }));
+      el('div', { class: 'note', text: 'Each pop-up shows a 5-minute candlestick chart with the buy/entry, stop-loss and target lines, plus the account, quantity, prices, reason and a countdown. Buy/Sell or Skip/Hold runs on hark-a1 straight away (no fingerprint) and the pop-up changes to the server’s answer. Requests expire after 5 minutes; answering twice is safe. A small “Watching for Hermes trades” notification stays while it runs and goes away at 15:30.' }));
   });
 
   SECTIONS.security = () => screen('Security & privacy', (b) => {
