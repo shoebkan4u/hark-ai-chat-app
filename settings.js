@@ -58,6 +58,7 @@
           row(icon.speak, 'Voice', 'Auto-read replies ' + (H.settings.voice.autoSpeak ? 'on' : 'off'), SECTIONS.voice),
           row(icon.widget, 'Home screen widgets', 'Quick ask · P&L', SECTIONS.widgets)),
         sec('App'), el('div', { class: 'card' },
+          approvalsRow(),
           row(icon.shield, 'Safety', 'When Shoeb AI asks before acting', SECTIONS.safety),
           row(icon.shield, 'Security & privacy', 'How keys and data are protected', SECTIONS.security),
           row(icon.info, 'About & updates', 'Web ' + H.version + (N ? ' · app ' + N.version() : ''), SECTIONS.about)));
@@ -418,6 +419,43 @@
       ask('askTools', icon.plug || icon.shield, 'Ask before MCP / runner write tools', 'On — a ticket before each write tool', 'Off — run at once (default)'),
       ask('askEmail', icon.mail || icon.shield, 'Ask before sending email', 'On — a Send/Cancel card in the chat', 'Off — emails go out at once (default)')),
       el('div', { class: 'note', text: 'Wisdom orders are still refused unless its analyzer (paper) mode is on. Buttons you press yourself on the Trade desk and Oracle Cloud screens keep their ticket.' }));
+  });
+
+  // ---------------- Hermes trade approval pop-ups (app 1.1.10+) ----------------
+  const hasApprovals = () => !!(N && typeof N.approvalsStatus === 'function');
+  const apStatus = () => { try { return JSON.parse(N.approvalsStatus()); } catch (_) { return {}; } };
+  const istTime = (ms) => new Date(ms).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', weekday: 'short', hour: '2-digit', minute: '2-digit' });
+  function approvalsRow() {
+    if (!hasApprovals()) return row(icon.chart, 'Trade approval pop-ups', 'Needs Shoeb AI 1.1.10 or newer (updates itself)', null);
+    const st = apStatus();
+    const sub = (st.enabled === false ? 'Off' : (st.running ? 'Watching now' : 'On · next ' + istTime(st.nextOpen) + ' IST')) + ' · server ' + (st.server || 'hark-a1 not set up');
+    return row(icon.chart, 'Trade approval pop-ups', sub, SECTIONS.approvals, toggle(st.enabled !== false, (v) => { N.approvalsSet(JSON.stringify({ enabled: !!v })); }));
+  }
+  SECTIONS.approvals = () => screen('Trade approval pop-ups', (b, redraw) => {
+    if (!hasApprovals()) { b.append(el('div', { class: 'note', text: 'Needs Shoeb AI 1.1.10 or newer. The app updates itself from GitHub.' })); return; }
+    const st = apStatus();
+    const out = el('div', { class: 'note' });
+    const fix = (what) => () => { N.approvalsFix(what); setTimeout(redraw, 1500); };
+    const yes = (v, okText, badText) => v ? okText : badText;
+    b.append(el('div', { class: 'card' },
+      row(icon.chart, 'Trade approval pop-ups', 'Pops up each Hermes LIVE buy with ✅ Buy / ⏭ Skip, Mon–Fri 09:15–15:30 IST', null,
+        toggle(st.enabled !== false, (v) => { N.approvalsSet(JSON.stringify({ enabled: !!v })); setTimeout(redraw, 300); })),
+      row(icon.globe, 'Server', (st.server || 'hark-a1 isn’t set up — add it under Keys › SSH keys & servers') + ' · admin SSH key from the vault', null),
+      row(icon.clock, 'Status', st.enabled === false ? 'Off' : st.running ? 'Watching now (every 15 s)' + (st.lastPoll ? ' · last check ' + new Date(st.lastPoll).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata' }) + ' IST' : '') + (st.lastError ? ' · last error: ' + st.lastError : '') : 'Starts ' + istTime(st.nextOpen) + ' IST', null),
+      row(icon.retry, 'Check hark-a1 now', 'Reads the pending list once (nothing is approved)', async () => {
+        out.textContent = 'Checking hark-a1…';
+        try { const r = await H.nativeCall('approvalsCheck'); out.textContent = r.pending ? r.pending + ' waiting: ' + r.symbols.join(', ') : 'Connected · nothing waiting'; }
+        catch (e) { out.textContent = 'Couldn’t check: ' + e.message; }
+      })),
+      out,
+      sec('So it pops up on time'),
+      el('div', { class: 'card' },
+        row(icon.shield, 'Notifications', yes(st.notifications, 'Allowed', 'Not allowed — tap to allow'), fix('notifications')),
+        row(icon.shield, 'Full-screen pop-up', yes(st.fullScreen, 'Allowed (shows over the lock screen)', 'Not allowed — tap; without it you get a heads-up banner'), fix('fullscreen')),
+        row(icon.clock, 'Start at 09:15 by itself', yes(st.exactAlarm, 'Alarms & reminders allowed', 'Tap to allow Alarms & reminders'), fix('exact')),
+        row(icon.shield, 'Battery: unrestricted', yes(st.battery, 'Yes', 'Tap so Android doesn’t pause the watcher'), fix('battery')),
+        row(icon.speak, 'Sound & vibration', 'Android settings for the “Trade approvals” channel', fix('channel'))),
+      el('div', { class: 'note', text: 'Each pop-up shows the account, quantity, buy price, stop-loss, target, amount, reason and time left. Buy or Skip runs on hark-a1 straight away (no fingerprint) and the pop-up changes to the server’s answer. Requests expire after 5 minutes; answering twice is safe. A small “Watching for Hermes trades” notification stays while it runs and goes away at 15:30.' }));
   });
 
   SECTIONS.security = () => screen('Security & privacy', (b) => {
