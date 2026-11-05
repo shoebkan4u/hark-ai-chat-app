@@ -315,7 +315,10 @@
 
   // ---------------- scheduled tasks ----------------
   function taskPayload(t) {
-    const full = t.model || H.settings.model; const info = H.modelInfo(full); const P = H.PROVIDERS[info.provider];
+    let full = t.model || H.settings.model;
+    // Native scheduled tasks call one provider directly: Auto (Long chats) sends the model Auto would use right now.
+    if (H.isAuto && H.isAuto(full)) full = (H.autoLongCurrent && H.autoLongCurrent()) || H.DEFAULT_MODEL;
+    const info = H.modelInfo(full); const P = H.PROVIDERS[info.provider];
     return {
       id: t.id, name: t.name, prompt: t.prompt, hour: t.hour, minute: t.minute, tz: 'Asia/Kolkata', base: P.base, model: info.id,
       keyIds: info.provider === 'custom' ? [] : H.vault.byProvider(info.provider).map((k) => k.id), headers: P.headers || {},

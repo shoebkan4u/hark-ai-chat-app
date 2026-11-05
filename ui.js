@@ -406,7 +406,7 @@
         el('button', { class: 'iconbtn' + (m.rating === -1 ? ' on' : ''), 'aria-label': 'Bad response', html: icon.down, onclick: () => rate(m, -1) }));
       node.append(acts);
       if (m.agent) node.append(el('div', { class: 'meta-line', text: (H.agents ? H.agents.MODES[m.agent.mode] : m.agent.mode) + ' · ' + (m.agent.server || 'hark-a1') }));
-      else if (m.model) node.append(el('div', { class: 'meta-line', text: H.modelLabel(m.model) + (m.keyLabel ? ' · ' + m.keyLabel : '') }));
+      else if (m.model) node.append(el('div', { class: 'meta-line', text: (m.auto ? 'Auto · ' : '') + H.modelLabel(m.model) + (m.keyLabel ? ' · ' + m.keyLabel : '') }));
     }
   }
   function attView(a) {
@@ -575,6 +575,8 @@
     const convo = [{ role: 'system', content: systemPrompt(chat) }].concat(historyMessages(chat, upto));
     refreshMsg(am, true);
     let model = H.freeModelOr ? H.freeModelOr(H.settings.model) : H.settings.model;
+    const auto = !!(H.isAuto && H.isAuto(model)); // Auto (Long chats): every round goes through the rotation, not a fixed model
+    if (auto) am.auto = true;
     const needVision = convo.some((m) => m.images && m.images.length);
     if (needVision && !H.modelInfo(model).vision) {
       const v = H.recommended().find((id) => H.modelInfo(id).vision && !(H.usage && H.usage.isZero(id))) || Object.keys(H.catalog.models).find((id) => H.isFree(id) && H.catalog.models[id].vision && H.providerReady(id.split(':')[0]));
@@ -589,7 +591,7 @@
     const cbs = {
       onText: (t) => { am.content = prefix + t; paint(); keepPartial(); },
       onReasoning: (t) => { am.reasoning = t; paint(); },
-      onSwitch: (from, to, why) => { am.switched = { to, why }; model = to; paint(); },
+      onSwitch: (from, to, why) => { am.switched = { to, why }; if (!auto) model = to; paint(); },
     };
     /** One model call; if the connection drops, keep the partial text and retry once when the app is back in front. */
     const callModel = async (reg) => {
@@ -617,7 +619,7 @@
       let conts = 0; // auto-continuations of replies cut off by the output-token limit
       for (let round = 0; round < 50; round++) {
         const r = await callModel(reg);
-        am.model = r.model; am.keyLabel = r.keyLabel; model = r.model;
+        am.model = r.model; am.keyLabel = r.keyLabel; if (!auto) model = r.model;
         am.content = prefix + (r.content || '');
         if (r.finish === 'aborted' || signal.aborted) break;
         const calls = (r.tool_calls || []).filter((c) => c && c.function && c.function.name);
@@ -697,6 +699,14 @@
           el('span', { class: 't', html: H.esc(H.modelLabel(full)) + badges + '<small>' + H.esc(H.PROVIDERS[m.provider] ? H.PROVIDERS[m.provider].name : m.provider) + ' · ' + H.esc(m.id) + '</small>' + use }),
           sel ? el('span', { class: 'check', html: icon.check }) : null);
       };
+      const autoRow = () => {
+        const full = H.AUTO_LONG; const sel = full === H.settings.model;
+        const cur = H.autoLongCurrent ? H.autoLongCurrent() : null; const n = H.autoLongOrder ? H.autoLongOrder().length : 0;
+        const sub = n ? (cur ? 'Now: ' + H.modelLabel(cur) : 'All ' + n + ' models out of quota — resets 05:30 IST') + ' · moves to the next of ' + n + ' when one runs out' : 'No Long chats models ready';
+        return el('button', { class: 'opt auto' + (cur ? '' : ' zero'), 'data-model': full, onclick: () => { if (H.agents && S.chat) H.agents.setMode(S.chat, 'hark'); H.settings.model = full; H.saveSettings(); setModelBtn(); close(); } },
+          el('span', { class: 't', html: H.esc(H.modelLabel(full)) + '<span class="badge">auto</span><small>' + H.esc(sub) + '</small>' }),
+          sel ? el('span', { class: 'check', html: icon.check }) : null);
+      };
       const draw = () => {
         list.innerHTML = '';
         const term = q.value.toLowerCase().trim();
@@ -707,7 +717,12 @@
         // Long chats (1.1.12): big context + ≥8k replies + tool calls + a usable daily quota. They stay in their own groups too.
         const longIds = H.longChat ? Object.keys(H.catalog.models).filter((id) => { const p = id.split(':')[0]; return H.providerReady(p) && H.isFree(id) && !(H.PROVIDERS[p] && H.PROVIDERS[p].paid) && match(id) && H.longChat(id); })
           .sort((a, b) => zl(a, b) || (pOrd(a) - pOrd(b)) || a.localeCompare(b)) : [];
-        if (longIds.length) { list.append(el('div', { class: 'mp-group long', text: 'Long chats (' + longIds.length + ') · big context, long replies, many tool steps' })); longIds.forEach((id) => list.append(row(id))); }
+        if (longIds.length) {
+          list.append(el('div', { class: 'mp-group long', text: 'Long chats (' + longIds.length + ') · big context, long replies, many tool steps' }));
+          // 1.1.13: Auto (Long chats) — uses each Long chats model in turn as daily quotas run out.
+          if (H.AUTO_LONG && match(H.AUTO_LONG)) list.append(autoRow());
+          longIds.forEach((id) => list.append(row(id)));
+        }
         const rec = H.recommended().filter(match).sort(zl);
         if (rec.length) { list.append(el('div', { class: 'mp-group', text: 'Recommended' })); rec.forEach((id) => list.append(row(id))); }
         const by = {};

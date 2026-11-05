@@ -146,6 +146,7 @@
   // Cloudflare models that answer "deprecated" (error 5028): never listed or used.
   const CF_RETIRED = new Set(['@cf/meta/llama-3.1-8b-instruct']);
   H.DEFAULT_MODEL = 'gemini:gemini-3.5-flash';
+  H.AUTO_LONG = 'auto:long'; // 1.1.13 pseudo-model, see completeAuto
   const RECOMMENDED = [
     'gemini:gemini-3.5-flash', 'groq:openai/gpt-oss-120b', 'openrouter:nvidia/nemotron-3-ultra-550b-a55b:free', 'kilo:kilo-auto/free',
     'github:openai/gpt-4.1-mini', 'mistral:mistral-medium-latest', 'gemini:gemini-3.5-flash-lite', 'cohere:command-a-03-2025',
@@ -188,6 +189,7 @@
   H.isFree = (full) => {
     const [p, ...rest] = String(full || '').split(':'); const id = rest.join(':');
     if (!p || !id) return false;
+    if (full === H.AUTO_LONG) return true;
     if (H.retired && H.retired(full)) return false;
     switch (p) {
       case 'openrouter': return /:free$/.test(id) || id === 'openrouter/free';
@@ -219,6 +221,7 @@
   const saveCatalog = () => localStorage.setItem(CAT_KEY, JSON.stringify(H.catalog));
 
   H.modelInfo = (full) => {
+    if (full === H.AUTO_LONG) return { full, provider: 'auto', id: 'long', name: 'Auto (Long chats)', tools: true, vision: true, auto: true };
     const m = H.catalog.models[full];
     if (m) return Object.assign({ full }, m);
     const [p, ...rest] = String(full).split(':');
@@ -230,7 +233,7 @@
     let n = m.id.split('/').pop().replace(/:free$/, '');
     return n;
   };
-  H.providerReady = (p) => p === 'custom' ? !!PROVIDERS.custom.base : p === 'cloudflare' ? !!PROVIDERS.cloudflare.account && H.vault.has(p) : H.vault.has(p);
+  H.providerReady = (p) => p === 'auto' ? H.autoLongOrder().length > 0 : p === 'custom' ? !!PROVIDERS.custom.base : p === 'cloudflare' ? !!PROVIDERS.cloudflare.account && H.vault.has(p) : H.vault.has(p);
   H.recommended = () => RECOMMENDED.filter((id) => H.isFree(id) && H.providerReady(id.split(':')[0]));
   H.RECOMMENDED = RECOMMENDED;
   /** Settings or tasks still pointing at a paid / retired model → the free daily default (or the first ready free pick). */
@@ -462,7 +465,7 @@
   }
 
   /** Complete with automatic model fallback when keys are exhausted or the provider is down. */
-  H.complete = async function (full, messages, tools, cb, signal) {
+  const completeFallback = async function (full, messages, tools, cb, signal) {
     const tried = [];
     let model = full;
     for (let attempt = 0; attempt < 4; attempt++) {
@@ -483,6 +486,85 @@
       }
     }
     throw new Error('No model available right now');
+  };
+
+
+  // ---------------- Auto (Long chats) — 1.1.13 ----------------
+  // A pseudo-model: runs the Long chats models one after another. It starts with the model that last worked today (IST),
+  // and when a call fails on quota / daily limit / rate limit / exhausted keys / 5xx / retired it moves to the next one,
+  // through the whole list. A reply cut mid-stream keeps its partial text and the next model continues it.
+  H.isAuto = (full) => full === H.AUTO_LONG;
+  const AUTO_KEY = 'hark.autoLong';      // {day, model}: the model that answered last (sticky for the IST day)
+  const ASKIP_KEY = 'hark.autoSkip';     // {model: until}: models that failed without a key/quota mark (5xx, …)
+  const istDay = (t) => new Date((t || Date.now()) + 5.5 * 3600e3).toISOString().slice(0, 10);
+  const loadJ = (k, d) => { try { return JSON.parse(localStorage.getItem(k) || '') || d; } catch (_) { return d; } };
+  // Quality + quota order: Gemini Flash, Mistral (large → medium → small), OpenCode Zen, Kilo, NVIDIA NIM, Gemini Flash-Lite last.
+  function autoRank(full) {
+    const p = full.split(':')[0]; const id = full.slice(p.length + 1);
+    if (p === 'gemini') return /lite/.test(id) ? 600 : /latest/.test(id) ? 11 : /preview/.test(id) ? 12 : 10;
+    if (p === 'mistral') return 100 + (/large/.test(id) ? 0 : /medium/.test(id) ? 1 : /magistral/.test(id) ? 3 : /small/.test(id) ? 4 : 2);
+    if (p === 'opencode') { const i = OPENCODE_FREE.indexOf(id); return 200 + (i < 0 ? 50 : i); }
+    if (p === 'kilo') return 300 + (/kilo-auto/.test(id) ? 0 : 1);
+    if (p === 'nvidia') return 400;
+    return 900;
+  }
+  /** Every Long chats model that could run now (key present, free, native-only providers only inside the app), in Auto order. */
+  H.autoLongOrder = () => !H.longChat || !H.catalog ? [] : Object.keys(H.catalog.models)
+    .filter((id) => { const p = id.split(':')[0]; return id !== H.AUTO_LONG && PROVIDERS[p] && !PROVIDERS[p].paid && H.providerReady(p) && H.isFree(id) && H.longChat(id) && (H.native || !PROVIDERS[p].nativeOnly); })
+    .sort((a, b) => autoRank(a) - autoRank(b) || a.localeCompare(b));
+  const autoSkipped = (full) => { const s = loadJ(ASKIP_KEY, {}); return s[full] && s[full] > Date.now(); };
+  const autoSkip = (full, ms) => { const s = loadJ(ASKIP_KEY, {}); for (const k in s) if (s[k] < Date.now()) delete s[k]; s[full] = Date.now() + ms; localStorage.setItem(ASKIP_KEY, JSON.stringify(s)); };
+  const keysResting = (full) => { const p = full.split(':')[0]; const ks = H.vault.byProvider(p); return ks.length > 0 && ks.every((k) => !usable(k.id)); };
+  /** Is this model worth trying right now? */
+  const autoAvailable = (full, needVision) => !(H.usage && H.usage.isZero(full)) && !keysResting(full) && !autoSkipped(full) && (!needVision || H.modelInfo(full).vision);
+  /** The order for this call: the sticky model of the day first, then the ones after it, then the ones before it. */
+  H.autoLongPlan = (needVision) => {
+    const all = H.autoLongOrder(); const st = loadJ(AUTO_KEY, {});
+    const i = st.day === istDay() ? all.indexOf(st.model) : -1;
+    const ring = i > 0 ? all.slice(i).concat(all.slice(0, i)) : all;
+    return ring.filter((id) => autoAvailable(id, needVision));
+  };
+  H.autoLongCurrent = () => H.autoLongPlan(false)[0] || null;
+  H.autoLongReset = () => { localStorage.removeItem(AUTO_KEY); localStorage.removeItem(ASKIP_KEY); };
+  const AUTO_SWITCH_RE = /quota|daily|limit|rate|exhaust|resting|credit|exceed|overload|unavailable|capacity|retired|deprecated|no longer/i;
+  async function completeAuto(messages, tools, cb, signal) {
+    const needVision = messages.some((m) => m.images && m.images.length);
+    const plan = H.autoLongPlan(needVision);
+    if (!plan.length) throw Object.assign(new Error('Auto (Long chats): every Long chats model is out of quota or unavailable right now' + (needVision ? ' for images' : '') + '. Quotas reset at 05:30 IST (some hourly).'), { code: 'exhausted' });
+    let partial = ''; let partialReason = ''; let first = null; let lastErr = null; const why = [];
+    for (const model of plan) {
+      if (!autoAvailable(model, needVision)) continue; // a provider marked during this loop (shared key)
+      let seen = '';
+      const msgs = partial ? messages.concat([{ role: 'assistant', content: partial }, { role: 'user', content: 'Continue exactly where you stopped, no repetition.' }]) : messages;
+      const sub = Object.assign({}, cb, {
+        onText: (t) => { seen = t; cb.onText && cb.onText(partial + t); },
+        onReasoning: (t) => { cb.onReasoning && cb.onReasoning(partialReason + t); },
+      });
+      try {
+        const r = await completeOnce(model, msgs, tools, sub, signal);
+        r.content = partial + (r.content || ''); if (partialReason) r.reasoning = partialReason + (r.reasoning || '');
+        r.model = model; r.auto = true; r.switched = first && first !== model ? { from: first, to: model, why: why.join('; ') } : null;
+        if (r.finish !== 'aborted') localStorage.setItem(AUTO_KEY, JSON.stringify({ day: istDay(), model }));
+        return r;
+      } catch (e) {
+        if (H.netErr && H.netErr(e)) { if (seen) e.partial = partial + seen; throw e; } // dropped link: the caller retries
+        if (signal && signal.aborted) throw e;
+        const st = Number(e.status) || 0;
+        const switchable = ['exhausted', 'retired', 'nokey', 'native'].includes(e.code) || st === 429 || st === 402 || st === 403 || st >= 500 || AUTO_SWITCH_RE.test(e.message || '') || /network|timeout|Unable to resolve|failed to connect/i.test(e.message || '');
+        if (!switchable) throw e;
+        lastErr = e; first = first || model;
+        // Not marked by the key/quota logic (5xx, odd errors): rest this model for a while so later messages skip it too.
+        if (e.code !== 'exhausted' && !(H.usage && H.usage.isZero(model))) autoSkip(model, st >= 500 || !st ? 10 * 60e3 : 30 * 60e3);
+        if (seen.trim()) { partial += seen; }
+        why.push(H.modelLabel(model) + ': ' + String(e.message || 'failed').replace(/^[^:]{0,40}:\s*/, '').slice(0, 80));
+        const next = plan.slice(plan.indexOf(model) + 1).find((id) => autoAvailable(id, needVision));
+        if (next) cb.onSwitch && cb.onSwitch(model, next, e.message);
+      }
+    }
+    throw Object.assign(new Error('Auto (Long chats): all ' + plan.length + ' Long chats models failed — last: ' + (lastErr ? lastErr.message : 'unknown')), { code: 'exhausted', status: lastErr && lastErr.status, partial: partial || undefined });
+  }
+  H.complete = function (full, messages, tools, cb, signal) {
+    return full === H.AUTO_LONG ? completeAuto(messages, tools, cb || {}, signal) : completeFallback(full, messages, tools, cb, signal);
   };
 
   /** One-shot non-streaming helper (titles etc.). */
