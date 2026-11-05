@@ -173,4 +173,27 @@
   });
   function short(n) { n = Number(n) || 0; return n >= 1e6 ? (n / 1e6).toFixed(n >= 1e7 ? 0 : 1) + 'M' : n >= 1e4 ? Math.round(n / 1e3) + 'k' : n >= 1e3 ? (n / 1e3).toFixed(1) + 'k' : String(n); }
   H.freeLimit = freeLimit;
+
+  /**
+   * "Long chats" (1.1.12): free models that suit long conversations and many tool rounds —
+   * tool calling, a big context (≥128k where the catalog says; unknown counts as OK for providers whose free models are all
+   * large), ≥8k reply tokens accepted, and no tiny daily quota. Out: OpenRouter :free (~50/day), GitHub Models (≤150/day,
+   * 4k output cap), Cloudflare (10k-neuron day, 4k output), SambaNova (low quota, 4k output), Cohere trial (1,000/month),
+   * Groq (free tier caps tokens per minute at ~6–12k, too small for a long chat's prompt), custom endpoint (not a free tier).
+   */
+  const LONG_OK = { gemini: 1, mistral: 1, opencode: 1, kilo: 1, nvidia: 1 };
+  function longChat(full) {
+    const i = String(full).indexOf(':'); const p = full.slice(0, i); const id = full.slice(i + 1);
+    if (!LONG_OK[p]) return false;
+    const m = (H.catalog && H.catalog.models[full]) || {};
+    if (m.tools === false || (H.modelInfo && H.modelInfo(full).tools === false)) return false;
+    if (/image|tts|audio|embed|live|ocr|moderation|guard/i.test(id) || (p === 'gemini' && /gemma/.test(id))) return false;
+    if (H.MAX_OUT && (H.MAX_OUT[p] || 0) < 8192) return false;
+    if (m.ctx && Number(m.ctx) < 128000) return false;
+    if (p === 'mistral' && !/-latest$|^mistral-large-4$/.test(id)) return false;
+    const lim = freeLimit(full);
+    if (lim && lim.per === 'day' && (!lim.unit || lim.unit === 'req') && lim.n < 200) return false;
+    return true;
+  }
+  H.longChat = longChat;
 })();

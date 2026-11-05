@@ -328,7 +328,7 @@
   async function tx(mode, fn) { const d = await db(); return new Promise((res, rej) => { const t = d.transaction('chats', mode); const s = t.objectStore('chats'); const out = fn(s); t.oncomplete = () => res(out && out.result !== undefined ? out.result : out); t.onerror = () => rej(t.error); }); }
   H.chats = {
     async all() { const list = await tx('readonly', (s) => s.getAll()); return (list || []).sort((a, b) => (b.updated || 0) - (a.updated || 0)); },
-    async get(id) { return tx('readonly', (s) => s.get(id)); },
+    async get(id) { const r = await tx('readonly', (s) => s.get(id)); return r && r.id ? r : null; }, // a missing id used to come back as the IDBRequest itself
     async put(c) { c.updated = c.updated || Date.now(); return tx('readwrite', (s) => s.put(JSON.parse(JSON.stringify(c)))); },
     async del(id) { return tx('readwrite', (s) => s.delete(id)); },
   };

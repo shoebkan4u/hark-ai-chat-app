@@ -308,6 +308,11 @@
     return null;
   }
 
+  // Output-token cap per provider (without it some providers stop at ~256 tokens, e.g. Cloudflare Workers AI).
+  // A 400 that mentions max_tokens drops it for that provider and retries once without it.
+  const MAX_OUT = { openrouter: 8192, groq: 8192, cohere: 4000, nvidia: 8192, gemini: 8192, xai: 8192, opencode: 8192, kilo: 8192, sambanova: 4096, mistral: 8192, github: 4000, cloudflare: 4096, custom: 8192 };
+  const NO_MAXTOK = new Set();
+  H.MAX_OUT = MAX_OUT;
   // Providers that send token usage in the last stream chunk when asked (stream_options.include_usage).
   const USAGE_OPT = new Set(['groq', 'gemini', 'mistral', 'github', 'sambanova', 'opencode', 'nvidia', 'cloudflare']);
 
@@ -373,6 +378,7 @@
       const k = live[ki];
       const body = { model: info.id, messages: toApiMessages(messages, info.vision !== false, info.provider), stream: true };
       if (USAGE_OPT.has(info.provider)) body.stream_options = { include_usage: true };
+      if (!NO_MAXTOK.has(info.provider)) body.max_tokens = MAX_OUT[info.provider] || 8192;
       let usage = null;
       if (useTools) { body.tools = tools; body.tool_choice = 'auto'; }
       if (info.provider === 'openrouter' || info.provider === 'kilo') body.usage = { include: true };
@@ -426,6 +432,7 @@
         } catch (_) {}
       }
       if (fatal) {
+        if (body.max_tokens && /max_tokens|max_completion_tokens|max_new_tokens/i.test(fatal.message || '')) { NO_MAXTOK.add(info.provider); ki--; continue; }
         const fo = failoverWindow(info.provider, Number(fatal.status) || 429, fatal.message);
         lastErr = new Error(fo && fo.daily && info.provider === 'cloudflare' ? H.CF_DAILY_MSG : P.name + ': ' + fatal.message); lastErr.status = Number(fatal.status) || 0;
         if (fo && fo.daily && k.id) { markExhausted(k.id, fo.until, fo.why); H.usage && H.usage.markZero(full, fo.why, fo.until); continue; }
@@ -440,6 +447,7 @@
         if (fo && fo.daily) { H.usage && H.usage.markZero(full, fo.why, fo.until); if (k.id) markExhausted(k.id, fo.until, fo.why); continue; }
         if (/\b5028\b|deprecated|no longer (available|supported)|has been retired/i.test(res.text || '')) { H.retire(full); throw Object.assign(lastErr, { code: 'retired' }); }
         if (fo && k.id) { markExhausted(k.id, fo.until, fo.why); continue; }
+        if ((res.status === 400 || res.status === 422) && body.max_tokens && /max_tokens|max_completion_tokens|max_new_tokens|maximum.*tokens|output tokens/i.test(res.text || '')) { NO_MAXTOK.add(info.provider); ki--; continue; }
         if (res.status === 400 && body.stream_options && /stream_options|include_usage/i.test(res.text || '')) { USAGE_OPT.delete(info.provider); ki--; continue; }
         if (res.status === 400 && useTools && /tool|function/i.test(res.text)) { useTools = false; ki--; continue; }
         throw lastErr;

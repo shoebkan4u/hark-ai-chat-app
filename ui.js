@@ -186,13 +186,29 @@
     const ta = $('#input'); ta.value = ''; autosize(ta); updateSend();
   }
   ui.newChat = newChat;
+  // The chat on screen is remembered so the next app launch reopens it (not a blank chat).
+  const LAST_KEY = 'hark.lastChat';
+  function rememberChat(c) { try { if (c && c.id && c.messages && c.messages.length) localStorage.setItem(LAST_KEY, c.id); } catch (_) {} }
   async function openChat(id) {
-    const c = S.live.get(id) || await H.chats.get(id); if (!c) return;
-    S.chat = c; renderThread(); setModelBtn(); scrollBottom(true);
+    const c = S.live.get(id) || await H.chats.get(id); if (!c) return false;
+    S.chat = c; rememberChat(c); renderThread(); setModelBtn(); scrollBottom(true);
+    return true;
   }
   ui.openChat = openChat;
-  const saveChat = H.debounce(() => { if (S.chat && S.chat.messages.length) H.chats.put(S.chat); }, 400);
-  async function saveNow() { if (S.chat && S.chat.messages.length) { S.chat.updated = Date.now(); await H.chats.put(S.chat); } }
+  /** On launch: reopen the last chat the user had open; stay on the blank chat if none or it was deleted. */
+  async function restoreLastChat(bootChat) {
+    let id = null; try { id = localStorage.getItem(LAST_KEY); } catch (_) {}
+    if (!id) return false;
+    const c = await H.chats.get(id).catch(() => null);
+    if (!c) { try { localStorage.removeItem(LAST_KEY); } catch (_) {} return false; }
+    // Something else (widget quick-ask, shared text, user typing) already took over the blank chat: leave it.
+    const ta = $('#input');
+    if (S.chat !== bootChat || (S.chat && S.chat.messages.length) || (ta && ta.value.trim()) || S.pending.length) return false;
+    return openChat(id);
+  }
+  ui.restoreLastChat = restoreLastChat;
+  const saveChat = H.debounce(() => { if (S.chat && S.chat.messages.length) { rememberChat(S.chat); H.chats.put(S.chat); } }, 400);
+  async function saveNow() { if (S.chat && S.chat.messages.length) { S.chat.updated = Date.now(); rememberChat(S.chat); await H.chats.put(S.chat); } }
 
   function greeting() {
     const h = Number(new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata', hour: 'numeric', hour12: false }));
@@ -598,13 +614,23 @@
         await H.agents.run({ chat, am, signal, paint, prompt: (u.content || '') + files });
       } else {
       const reg = await H.buildTools().catch(() => ({ defs: [], run: {} }));
-      for (let round = 0; round < 8; round++) {
+      let conts = 0; // auto-continuations of replies cut off by the output-token limit
+      for (let round = 0; round < 50; round++) {
         const r = await callModel(reg);
         am.model = r.model; am.keyLabel = r.keyLabel; model = r.model;
         am.content = prefix + (r.content || '');
         if (r.finish === 'aborted' || signal.aborted) break;
         const calls = (r.tool_calls || []).filter((c) => c && c.function && c.function.name);
-        if (!calls.length) break;
+        if (!calls.length) {
+          // Cut off by the token limit: ask the model to carry on and append the rest (up to 5 times).
+          if ((r.finish === 'length' || r.finish === 'max_tokens') && (r.content || '').trim() && conts < 5) {
+            conts++; round--;
+            convo.push({ role: 'assistant', content: r.content }, { role: 'user', content: 'Continue exactly where you stopped, no repetition.' });
+            prefix = am.content; paint();
+            continue;
+          }
+          break;
+        }
         const asst = { role: 'assistant', content: r.content || '', tool_calls: calls.map((c) => ({ id: c.id, type: 'function', function: { name: c.function.name, arguments: c.function.arguments || '{}' } })) };
         convo.push(asst); am.trace.push(asst);
         if (r.content) prefix = am.content + '\n\n';
@@ -623,7 +649,7 @@
           const tm = { role: 'tool', tool_call_id: c.id, content: H.clip(result == null ? 'null' : result) };
           convo.push(tm); am.trace.push(tm); paint();
         }
-        if (round === 7) am.content += '\n\n_(Stopped after several tool rounds.)_';
+        if (round === 49) am.content += '\n\n_(Stopped after several tool rounds.)_';
       }
       }
       if (!am.content.trim() && !signal.aborted) am.content = am.steps.length ? '_(The model returned no text after using tools.)_' : '';
@@ -677,6 +703,11 @@
         const match = (full) => !term || full.toLowerCase().includes(term) || H.modelLabel(full).toLowerCase().includes(term);
         // Free models only (1.1.9); models with nothing left today go last, greyed.
         const zl = (a, b) => (H.usage ? H.usage.isZero(a) - H.usage.isZero(b) : 0);
+        const pOrd = (id) => { const k = Object.keys(H.PROVIDERS).indexOf(id.split(':')[0]); return k < 0 ? 99 : k; };
+        // Long chats (1.1.12): big context + ≥8k replies + tool calls + a usable daily quota. They stay in their own groups too.
+        const longIds = H.longChat ? Object.keys(H.catalog.models).filter((id) => { const p = id.split(':')[0]; return H.providerReady(p) && H.isFree(id) && !(H.PROVIDERS[p] && H.PROVIDERS[p].paid) && match(id) && H.longChat(id); })
+          .sort((a, b) => zl(a, b) || (pOrd(a) - pOrd(b)) || a.localeCompare(b)) : [];
+        if (longIds.length) { list.append(el('div', { class: 'mp-group long', text: 'Long chats (' + longIds.length + ') · big context, long replies, many tool steps' })); longIds.forEach((id) => list.append(row(id))); }
         const rec = H.recommended().filter(match).sort(zl);
         if (rec.length) { list.append(el('div', { class: 'mp-group', text: 'Recommended' })); rec.forEach((id) => list.append(row(id))); }
         const by = {};
@@ -929,5 +960,6 @@
   // ---------------- boot ----------------
   ui.mount = function () {
     skeleton(); setModelBtn(); newChat(); updateSend();
+    ui.restored = restoreLastChat(S.chat).catch(() => false);
   };
 })();
