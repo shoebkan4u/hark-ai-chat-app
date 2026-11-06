@@ -514,6 +514,7 @@
     const proj = chat.projectId && H.settings.projects.find((p) => p.id === chat.projectId);
     const accs = H.oaAccounts();
     let s = 'You are Shoeb AI, Shoeb\'s personal AI assistant in his Android app. Be warm, direct and concise: answer first, then detail only if useful. Use Markdown (short paragraphs, lists, tables when they help). For long code or documents use fenced code blocks with a language tag.\n';
+    s += 'He types fast on his phone: expect typos, missing words, voice-typing slips and Hinglish (Hindi in Roman script). Work out what he most likely means from the words, this chat and what you know about him, restate it in a few words only when it is unclear, and act on it. Ask one short question only when two readings would lead to really different actions (orders, commands on his servers, emails). Reply in the language he wrote in.\n';
     s += 'Current date and time: ' + H.istNow() + ' (IST, Asia/Kolkata). The user: ' + (H.settings.fullName || 'Shoeb') + ' (call him ' + (H.settings.name || 'Shoeb') + '), in India; amounts in ₹ unless stated.\n';
     s += 'Use tools when they help: web_search for anything current (cite sources as [1], [2] matching the search results order), fetch_url to read a page.';
     if (accs.length) s += ' Broker tools: openalgo_read reads data. ' + accs.map((a) => a.name + ' is ' + (a.mode === 'LIVE' ? 'a LIVE real-money account' : 'a PAPER (analyzer/sandbox) account')).join('; ') + '. openalgo_trade drafts tickets for place, smart, basket, split, modify, cancel, cancel_all, close_all and analyzer toggle. Use it only when the user asks for that action; always name the account and say LIVE or PAPER. ' + (H.askFirst('askTrades') ? 'He turned on confirmations, so each one opens a ticket he must tap; never retry a declined ticket.' : 'Calling it SENDS THE ORDER IMMEDIATELY — there is no confirmation step — so call it only for exactly what he asked, with the exact account, symbol, side and quantity he gave; ask him first if anything is unclear.') + ' Never claim something was sent unless the tool returned status sent or sent_after_user_confirmation.';
@@ -593,19 +594,24 @@
       onReasoning: (t) => { am.reasoning = t; paint(); },
       onSwitch: (from, to, why) => { am.switched = { to, why }; if (!auto) model = to; paint(); },
     };
-    /** One model call; if the connection drops, keep the partial text and retry once when the app is back in front. */
+    /** One model call. If the connection drops (switching apps, network change), keep the partial text, keep the
+     *  reply alive in the background and retry with back-off, continuing from where it stopped (1.1.14). */
     const callModel = async (reg) => {
-      try { return await H.complete(model, convo, reg.defs, cbs, signal); } catch (e) {
-        if (!H.netErr(e) || signal.aborted) throw e;
-        const partial = am.content;
-        am.reconnecting = true; paint();
-        H.keepAlive(am.id, false); await H.whenForeground(signal); H.keepAlive(am.id, true);
-        await H.sleep(500);
-        if (signal.aborted) return { content: partial.slice(prefix.length), tool_calls: [], finish: 'aborted', model };
-        try { return await H.complete(model, convo, reg.defs, cbs, signal); } catch (e2) {
-          if (H.netErr(e2)) { if (partial.length > am.content.length) am.content = partial; e2.dropped = true; }
-          throw e2;
-        } finally { am.reconnecting = false; }
+      for (let attempt = 0; ; attempt++) {
+        try { return await H.complete(model, convo, reg.defs, cbs, signal); } catch (e) {
+          if (!H.netErr(e) || signal.aborted) throw e;
+          if (attempt >= 14) { e.dropped = true; throw e; }
+          const partial = am.content;
+          am.reconnecting = true; paint();
+          try { await H.retryPause(attempt, signal); } finally { am.reconnecting = false; }
+          if (signal.aborted) return { content: partial.slice(prefix.length), tool_calls: [], finish: 'aborted', model };
+          const got = partial.slice(prefix.length);
+          if (got.trim()) { // carry on from the text that already arrived instead of starting the answer over
+            convo.push({ role: 'assistant', content: got }, { role: 'user', content: 'Continue exactly where you stopped, no repetition.' });
+            prefix = partial;
+          }
+          am.content = partial; paint();
+        }
       }
     };
     try {
@@ -667,6 +673,12 @@
       if (raf) cancelAnimationFrame(raf);
       refreshMsg(am, false); if (onScreen()) scrollBottom();
       if (onScreen()) await saveNow(); else await H.chats.put(chat);
+      // 1.1.14: job finished while you were in another app (or another chat): tell you with a notification, like Hark.
+      if (!signal.aborted && !opts.silent && (!H.appFg || !onScreen())) {
+        const name = chat.title || 'your chat';
+        const text = String(am.error ? '⚠️ ' + am.error : (am.content || '')).replace(/[#*_`>]/g, '').replace(/\s+/g, ' ').trim();
+        H.notify(am.error ? 'Shoeb AI hit a problem · ' + name : '✅ Done · ' + name, text.slice(0, 600) || 'Your reply is ready.');
+      }
     }
     if (opts.speak || (H.settings.voice.autoSpeak && !opts.silent)) await ui.speak(am.content || am.error || '');
     return am;
@@ -710,7 +722,7 @@
       const draw = () => {
         list.innerHTML = '';
         const term = q.value.toLowerCase().trim();
-        const match = (full) => !term || full.toLowerCase().includes(term) || H.modelLabel(full).toLowerCase().includes(term);
+        const match = (full) => !(H.isDeadModel && H.isDeadModel(full)) && (!term || full.toLowerCase().includes(term) || H.modelLabel(full).toLowerCase().includes(term));
         // Free models only (1.1.9); models with nothing left today go last, greyed.
         const zl = (a, b) => (H.usage ? H.usage.isZero(a) - H.usage.isZero(b) : 0);
         const pOrd = (id) => { const k = Object.keys(H.PROVIDERS).indexOf(id.split(':')[0]); return k < 0 ? 99 : k; };

@@ -93,6 +93,18 @@
     fgWaiters.push(res);
     if (signal) signal.addEventListener('abort', () => res());
   });
+  /** 1.1.14: a connection dropped mid-reply. Back off and try again even while the app is in the background (the
+   *  native foreground service + wake lock keep the process and network up), so switching apps never stops a reply.
+   *  Only after ~3 min of failed tries in the background does it wait for the app to come back to the front. */
+  const RETRY_WAITS = [1500, 3000, 5000, 8000, 12000, 15000, 20000, 30000, 30000, 30000, 30000];
+  H.retryPause = async (attempt, signal) => {
+    if (signal && signal.aborted) return;
+    if (!H.appFg && attempt >= RETRY_WAITS.length) { await H.whenForeground(signal); await H.sleep(500); return; }
+    const ms = H.appFg ? Math.min(RETRY_WAITS[Math.min(attempt, RETRY_WAITS.length - 1)], 5000) : RETRY_WAITS[Math.min(attempt, RETRY_WAITS.length - 1)];
+    await new Promise((res) => { const t = setTimeout(res, ms); if (signal) signal.addEventListener('abort', () => { clearTimeout(t); res(); }, { once: true }); });
+  };
+  /** 1.1.14: a phone notification (needs the Android shell; no-op in the browser). */
+  H.notify = (title, body) => { try { if (N && N.notify) N.notify(String(title || 'Shoeb AI').slice(0, 80), String(body || '').slice(0, 3000)); } catch (_) {} };
   /** Keep the process (foreground service + wake lock) alive while a reply or command runs. */
   H.keepAlive = (tag, on) => { try { if (N && N.keepAlive) N.keepAlive(String(tag), !!on); } catch (_) {} };
   H.nativeDone = (id) => handlers.delete(id);

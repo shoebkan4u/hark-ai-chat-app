@@ -234,7 +234,7 @@
     return n;
   };
   H.providerReady = (p) => p === 'auto' ? H.autoLongOrder().length > 0 : p === 'custom' ? !!PROVIDERS.custom.base : p === 'cloudflare' ? !!PROVIDERS.cloudflare.account && H.vault.has(p) : H.vault.has(p);
-  H.recommended = () => RECOMMENDED.filter((id) => H.isFree(id) && H.providerReady(id.split(':')[0]));
+  H.recommended = () => RECOMMENDED.filter((id) => H.isFree(id) && H.providerReady(id.split(':')[0]) && !(H.isDeadModel && H.isDeadModel(id)));
   H.RECOMMENDED = RECOMMENDED;
   /** Settings or tasks still pointing at a paid / retired model → the free daily default (or the first ready free pick). */
   H.freeModelOr = (full) => (H.isFree(full) ? full : (H.providerReady('gemini') || !H.recommended().length ? H.DEFAULT_MODEL : H.recommended()[0]));
@@ -465,6 +465,17 @@
   }
 
   /** Complete with automatic model fallback when keys are exhausted or the provider is down. */
+  // ---------------- broken-model registry (1.1.14) ----------------
+  // A model that answers 404 / "not found" / "unsupported" for his keys is hidden everywhere (picker, Auto, fallback,
+  // default, scheduled tasks) until the next daily health check says it works again.
+  const DEAD_KEY = 'hark.deadModels';   // {model: {until, why}}
+  const GONE_RE = /not found|not_found|does not exist|unknown model|no such model|not supported|unsupported|no endpoints|not available for|invalid model|model_not_found|decommission|retired|deprecated/i;
+  const deadMap = () => { try { return JSON.parse(localStorage.getItem(DEAD_KEY) || '{}') || {}; } catch (_) { return {}; } };
+  H.isDeadModel = (full) => { const d = deadMap()[full]; return !!(d && d.until > Date.now()); };
+  H.markDead = (full, why, ms) => { if (!full || full === H.AUTO_LONG) return; const d = deadMap(); for (const k in d) if (d[k].until < Date.now()) delete d[k]; d[full] = { until: Date.now() + (ms || 24 * 3600e3), why: String(why || '').slice(0, 120) }; localStorage.setItem(DEAD_KEY, JSON.stringify(d)); };
+  H.markAlive = (full) => { const d = deadMap(); if (d[full]) { delete d[full]; localStorage.setItem(DEAD_KEY, JSON.stringify(d)); } };
+  H.modelGone = (e) => { const st = Number(e && e.status) || 0; const m = (e && e.message) || ''; return st === 404 || ((st === 400 || st === 422 || st === 403) && GONE_RE.test(m)) || (!st && e && e.code !== 'exhausted' && GONE_RE.test(m)); };
+
   const completeFallback = async function (full, messages, tools, cb, signal) {
     const tried = [];
     let model = full;
@@ -476,10 +487,11 @@
         return r;
       } catch (e) {
         if (H.netErr && H.netErr(e)) throw e; // a dropped link is retried by the caller, not a reason to switch models
-        const canFallback = H.settings.autoFallback && (e.code === 'exhausted' || e.code === 'retired' || e.code === 'nokey' || e.code === 'native' || (e.status && e.status >= 500) || /network|timeout|Unable to resolve|failed to connect/i.test(e.message));
+        const gone = H.modelGone(e); if (gone) H.markDead(model, e.message);
+        const canFallback = gone || e.status === 429 || (H.settings.autoFallback && (e.code === 'exhausted' || e.code === 'retired' || e.code === 'nokey' || e.code === 'native' || (e.status && e.status >= 500) || /quota|rate|limit|network|timeout|Unable to resolve|failed to connect/i.test(e.message)));
         if (!canFallback) throw e;
         const needVision = messages.some((m) => m.images && m.images.length);
-        const next = RECOMMENDED.find((id) => !tried.includes(id) && H.isFree(id) && !(H.usage && H.usage.isZero(id)) && H.providerReady(id.split(':')[0]) && (!needVision || H.modelInfo(id).vision) && H.catalog.models[id] && (H.native || !PROVIDERS[id.split(':')[0]].nativeOnly));
+        const next = RECOMMENDED.concat(H.autoLongOrder ? H.autoLongOrder() : []).find((id) => !tried.includes(id) && !H.isDeadModel(id) && H.isFree(id) && !(H.usage && H.usage.isZero(id)) && H.providerReady(id.split(':')[0]) && (!needVision || H.modelInfo(id).vision) && H.catalog.models[id] && (H.native || !PROVIDERS[id.split(':')[0]].nativeOnly));
         if (!next) throw e;
         cb.onSwitch && cb.onSwitch(model, next, e.message);
         model = next;
@@ -498,14 +510,14 @@
   const ASKIP_KEY = 'hark.autoSkip';     // {model: until}: models that failed without a key/quota mark (5xx, …)
   const istDay = (t) => new Date((t || Date.now()) + 5.5 * 3600e3).toISOString().slice(0, 10);
   const loadJ = (k, d) => { try { return JSON.parse(localStorage.getItem(k) || '') || d; } catch (_) { return d; } };
-  // Quality + quota order: Gemini Flash, Mistral (large → medium → small), OpenCode Zen, Kilo, NVIDIA NIM, Gemini Flash-Lite last.
+  // Quality + speed order: Gemini Flash, Mistral (large → medium → small), OpenCode Zen, Kilo, Gemini Flash-Lite, NVIDIA NIM last (1.1.14).
   function autoRank(full) {
     const p = full.split(':')[0]; const id = full.slice(p.length + 1);
     if (p === 'gemini') return /lite/.test(id) ? 600 : /latest/.test(id) ? 11 : /preview/.test(id) ? 12 : 10;
     if (p === 'mistral') return 100 + (/large/.test(id) ? 0 : /medium/.test(id) ? 1 : /magistral/.test(id) ? 3 : /small/.test(id) ? 4 : 2);
     if (p === 'opencode') { const i = OPENCODE_FREE.indexOf(id); return 200 + (i < 0 ? 50 : i); }
     if (p === 'kilo') return 300 + (/kilo-auto/.test(id) ? 0 : 1);
-    if (p === 'nvidia') return 400;
+    if (p === 'nvidia') return 700; // 1.1.14: last — NVIDIA's free queue is slow and some catalog models 404 per account
     return 900;
   }
   /** Every Long chats model that could run now (key present, free, native-only providers only inside the app), in Auto order. */
@@ -516,7 +528,7 @@
   const autoSkip = (full, ms) => { const s = loadJ(ASKIP_KEY, {}); for (const k in s) if (s[k] < Date.now()) delete s[k]; s[full] = Date.now() + ms; localStorage.setItem(ASKIP_KEY, JSON.stringify(s)); };
   const keysResting = (full) => { const p = full.split(':')[0]; const ks = H.vault.byProvider(p); return ks.length > 0 && ks.every((k) => !usable(k.id)); };
   /** Is this model worth trying right now? */
-  const autoAvailable = (full, needVision) => !(H.usage && H.usage.isZero(full)) && !keysResting(full) && !autoSkipped(full) && (!needVision || H.modelInfo(full).vision);
+  const autoAvailable = (full, needVision) => !H.isDeadModel(full) && !(H.usage && H.usage.isZero(full)) && !keysResting(full) && !autoSkipped(full) && (!needVision || H.modelInfo(full).vision);
   /** The order for this call: the sticky model of the day first, then the ones after it, then the ones before it. */
   H.autoLongPlan = (needVision) => {
     const all = H.autoLongOrder(); const st = loadJ(AUTO_KEY, {});
@@ -527,6 +539,8 @@
   H.autoLongCurrent = () => H.autoLongPlan(false)[0] || null;
   H.autoLongReset = () => { localStorage.removeItem(AUTO_KEY); localStorage.removeItem(ASKIP_KEY); };
   const AUTO_SWITCH_RE = /quota|daily|limit|rate|exhaust|resting|credit|exceed|overload|unavailable|capacity|retired|deprecated|no longer/i;
+  const AUTO_GONE_RE = /not found|not_found|does not exist|unknown model|no such model|not supported|unsupported|no endpoints|not available for|invalid model|model_not_found/i; // 1.1.14
+  const AUTO_FIRST_MS = 30e3; // 1.1.14: no first word in 30 s → try the next model instead of waiting
   async function completeAuto(messages, tools, cb, signal) {
     const needVision = messages.some((m) => m.images && m.images.length);
     const plan = H.autoLongPlan(needVision);
@@ -534,27 +548,41 @@
     let partial = ''; let partialReason = ''; let first = null; let lastErr = null; const why = [];
     for (const model of plan) {
       if (!autoAvailable(model, needVision)) continue; // a provider marked during this loop (shared key)
-      let seen = '';
+      let seen = ''; let slow = false; let got = false;
+      const child = new AbortController();
+      const onParent = () => child.abort();
+      if (signal) { if (signal.aborted) child.abort(); else signal.addEventListener('abort', onParent, { once: true }); }
+      const firstTimer = setTimeout(() => { if (!got && plan.indexOf(model) < plan.length - 1) { slow = true; child.abort(); } }, AUTO_FIRST_MS);
       const msgs = partial ? messages.concat([{ role: 'assistant', content: partial }, { role: 'user', content: 'Continue exactly where you stopped, no repetition.' }]) : messages;
       const sub = Object.assign({}, cb, {
-        onText: (t) => { seen = t; cb.onText && cb.onText(partial + t); },
-        onReasoning: (t) => { cb.onReasoning && cb.onReasoning(partialReason + t); },
+        onText: (t) => { got = true; seen = t; cb.onText && cb.onText(partial + t); },
+        onReasoning: (t) => { got = true; cb.onReasoning && cb.onReasoning(partialReason + t); },
       });
       try {
-        const r = await completeOnce(model, msgs, tools, sub, signal);
+        const r = await completeOnce(model, msgs, tools, sub, child.signal);
+        clearTimeout(firstTimer); if (signal) signal.removeEventListener('abort', onParent);
+        if (slow && r.finish === 'aborted' && !(signal && signal.aborted)) throw Object.assign(new Error('no reply in 30 s'), { code: 'slow' });
         r.content = partial + (r.content || ''); if (partialReason) r.reasoning = partialReason + (r.reasoning || '');
         r.model = model; r.auto = true; r.switched = first && first !== model ? { from: first, to: model, why: why.join('; ') } : null;
         if (r.finish !== 'aborted') localStorage.setItem(AUTO_KEY, JSON.stringify({ day: istDay(), model }));
         return r;
-      } catch (e) {
-        if (H.netErr && H.netErr(e)) { if (seen) e.partial = partial + seen; throw e; } // dropped link: the caller retries
-        if (signal && signal.aborted) throw e;
+      } catch (e0) {
+        clearTimeout(firstTimer); if (signal) signal.removeEventListener('abort', onParent);
+        let e = e0;
+        if (slow && !(signal && signal.aborted)) e = Object.assign(new Error('no reply in 30 s'), { code: 'slow' });
+        else {
+          if (H.netErr && H.netErr(e)) { if (seen) e.partial = partial + seen; throw e; } // dropped link: the caller retries
+          if (signal && signal.aborted) throw e;
+        }
         const st = Number(e.status) || 0;
-        const switchable = ['exhausted', 'retired', 'nokey', 'native'].includes(e.code) || st === 429 || st === 402 || st === 403 || st >= 500 || AUTO_SWITCH_RE.test(e.message || '') || /network|timeout|Unable to resolve|failed to connect/i.test(e.message || '');
+        const gone = H.modelGone(e) || AUTO_GONE_RE.test(e.message || '');
+        const switchable = gone || e.code === 'slow' || ['exhausted', 'retired', 'nokey', 'native'].includes(e.code) || st === 429 || st === 402 || st === 403 || st >= 500 || AUTO_SWITCH_RE.test(e.message || '') || /network|timeout|Unable to resolve|failed to connect/i.test(e.message || '');
         if (!switchable) throw e;
         lastErr = e; first = first || model;
+        if (gone) { autoSkip(model, 24 * 3600e3); H.markDead(model, e.message); } // not served for this key: hidden everywhere until the next daily check
+        else if (e.code === 'slow') autoSkip(model, 15 * 60e3);
         // Not marked by the key/quota logic (5xx, odd errors): rest this model for a while so later messages skip it too.
-        if (e.code !== 'exhausted' && !(H.usage && H.usage.isZero(model))) autoSkip(model, st >= 500 || !st ? 10 * 60e3 : 30 * 60e3);
+        else if (e.code !== 'exhausted' && !(H.usage && H.usage.isZero(model))) autoSkip(model, st >= 500 || !st ? 10 * 60e3 : 30 * 60e3);
         if (seen.trim()) { partial += seen; }
         why.push(H.modelLabel(model) + ': ' + String(e.message || 'failed').replace(/^[^:]{0,40}:\s*/, '').slice(0, 80));
         const next = plan.slice(plan.indexOf(model) + 1).find((id) => autoAvailable(id, needVision));
@@ -563,6 +591,51 @@
     }
     throw Object.assign(new Error('Auto (Long chats): all ' + plan.length + ' Long chats models failed — last: ' + (lastErr ? lastErr.message : 'unknown')), { code: 'exhausted', status: lastErr && lastErr.status, partial: partial || undefined });
   }
+  // ---------------- daily model health check (1.1.14) ----------------
+  // Once per IST day every free model he can pick gets a tiny "reply OK" call, 3 at a time. Broken ones (404,
+  // unsupported, bad key, no answer in 25 s) are hidden everywhere until the next day's check; working ones come back.
+  // If his default or a scheduled task's model broke, it moves to Auto (Long chats).
+  const HC_KEY = 'hark.modelCheck';     // {day, ok:[...], bad:{model: why}, at}
+  H.modelCheckInfo = () => { try { return JSON.parse(localStorage.getItem(HC_KEY) || '{}') || {}; } catch (_) { return {}; } };
+  let hcRunning = false;
+  H.checkModels = async function (force) {
+    if (hcRunning || !H.catalog || !H.catalog.models) return null;
+    const day = istDay(); const last = H.modelCheckInfo();
+    if (!force && last.day === day) return last;
+    hcRunning = true;
+    try {
+      const ids = Object.keys(H.catalog.models).filter((id) => {
+        const p = id.split(':')[0];
+        return id !== H.AUTO_LONG && PROVIDERS[p] && !PROVIDERS[p].paid && H.providerReady(p) && H.isFree(id) && (H.native || !PROVIDERS[p].nativeOnly) && !(H.usage && H.usage.isZero(id));
+      }).slice(0, 80);
+      const ok = []; const bad = {};
+      const ping = async (id) => {
+        const ac = new AbortController(); const t = setTimeout(() => ac.abort(), 25e3);
+        try {
+          const r = await completeOnce(id, [{ role: 'user', content: 'Reply with the single word OK.' }], null, {}, ac.signal);
+          if (r.finish === 'aborted') throw Object.assign(new Error('no answer in 25 s'), { code: 'slow' });
+          ok.push(id); H.markAlive(id);
+        } catch (e) {
+          if (e.code === 'exhausted' || e.status === 429 || /quota|rate|limit|exceed/i.test(e.message || '')) { ok.push(id); return; } // works, just out of quota now
+          if (ac.signal.aborted) e = Object.assign(new Error('no answer in 25 s'), { code: 'slow' });
+          else if (H.netErr && H.netErr(e)) return; // phone offline: no verdict
+          bad[id] = String(e.message || 'failed').slice(0, 120);
+          H.markDead(id, bad[id], 26 * 3600e3);
+        } finally { clearTimeout(t); }
+      };
+      for (let i = 0; i < ids.length; i += 3) await Promise.all(ids.slice(i, i + 3).map(ping));
+      const res = { day, at: Date.now(), ok, bad };
+      localStorage.setItem(HC_KEY, JSON.stringify(res));
+      let moved = false;
+      if (H.settings.model && bad[H.settings.model]) { H.settings.model = H.AUTO_LONG; moved = true; }
+      (H.settings.tasks || []).forEach((t) => { if (t.model && bad[t.model]) { t.model = H.AUTO_LONG; moved = true; } });
+      if (moved && H.saveSettings) H.saveSettings();
+      if (H.ui && H.ui.setModelBtn) { try { H.ui.setModelBtn(); } catch (_) {} }
+      const n = Object.keys(bad).length;
+      if (n && H.toast) H.toast('Daily model check: ' + ok.length + ' working, ' + n + ' broken and hidden' + (moved ? ' (default moved to Auto)' : ''), 4000);
+      return res;
+    } finally { hcRunning = false; }
+  };
   H.complete = function (full, messages, tools, cb, signal) {
     return full === H.AUTO_LONG ? completeAuto(messages, tools, cb || {}, signal) : completeFallback(full, messages, tools, cb, signal);
   };

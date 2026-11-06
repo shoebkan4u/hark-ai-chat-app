@@ -192,7 +192,7 @@
           // Link dropped or the 15-min exec cap hit while the agent keeps running on the server: follow it again.
           if (++attempt > MAX_ATTACH) { am.error = MODES[mode] + ' is still running on the server (log ~/.hark-agent/' + run + '.log).'; break; }
           step.card.how = 'reconnecting'; paint();
-          await H.whenForeground(signal); await H.sleep(600);
+          await H.retryPause(attempt - 1, signal); // 1.1.14: keep following in the background too
           step.card.how = 'running';
         }
       } catch (e) {

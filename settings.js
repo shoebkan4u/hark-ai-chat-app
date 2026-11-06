@@ -530,10 +530,10 @@
   H.showTaskResult = function (r) {
     H.ui.modal(r.name, H.esc(r.text).replace(/\n/g, '<br>'), [['Close', false, 'ghost'], ['Continue in chat', true]]).then((go) => {
       if (!go) return;
-      H.ui.newChat();
-      H.state.chat.title = r.name;
+      // 1.1.14: add it to the chat on screen instead of opening a new one.
+      if (!H.state.chat.title) H.state.chat.title = r.name;
       H.state.chat.messages.push({ id: H.newId('m'), role: 'assistant', content: '**' + r.name + '**\n\n' + r.text, ts: r.at });
-      H.ui.renderThread();
+      H.ui.renderThread(); H.chats.put(H.state.chat).catch(() => {});
     });
   };
 

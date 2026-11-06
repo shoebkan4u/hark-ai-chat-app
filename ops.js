@@ -95,7 +95,7 @@
       if (!H.netErr(e)) return { status: 'failed', error: e.message };
       // Only read-only commands are repeated (once, when the app is back in front). Writes are never re-run.
       if (!v.readOnly) return dropped(vm, command, false);
-      await H.whenForeground(); await H.sleep(400);
+      await H.retryPause(1); // 1.1.14: retry in the background too
       try { return await run(); } catch (e2) { return H.netErr(e2) ? dropped(vm, command, true) : { status: 'failed', error: e2.message }; }
     }
   };
