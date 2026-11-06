@@ -37,6 +37,22 @@
 
   // Live model catalog: on launch, then every 12 hours while open.
   setTimeout(() => H.ui.refreshCatalog(false), 1200);
+  // 1.1.14: pick up a new web build without a full app restart. On return to the app (and hourly) compare
+  // version.json with the running build; if newer and no reply is running, reload in place (chats are saved locally).
+  const checkWebUpdate = async () => {
+    try {
+      if (!/^[0-9a-f]{7,}/.test(H.version)) return;
+      const j = await (await fetch('version.json?t=' + Date.now(), { cache: 'no-store' })).json();
+      if (!j.version || j.version === H.version) return;
+      if (H.state && H.state.busy) { setTimeout(checkWebUpdate, 30000); return; }
+      sessionStorage.setItem('hark.updatedFrom', H.version);
+      location.reload();
+    } catch (_) {}
+  };
+  if (sessionStorage.getItem('hark.updatedFrom')) { sessionStorage.removeItem('hark.updatedFrom'); setTimeout(() => H.toast && H.toast('Updated to web build ' + H.version, 3500), 1500); }
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) setTimeout(checkWebUpdate, 1500); });
+  setInterval(checkWebUpdate, 60 * 60e3);
+  setTimeout(checkWebUpdate, 8000);
   // 1.1.14: daily model health check (once per IST day), so broken models disappear everywhere.
   const dailyCheck = () => { if (H.checkModels) H.checkModels(false).catch(() => {}); };
   setTimeout(dailyCheck, 20000);
