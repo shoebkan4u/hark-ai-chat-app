@@ -1,0 +1,16 @@
+{
+ "versionCode": 15,
+ "versionName": "1.1.17",
+ "version": "1.1.17",
+ "sha256": "50f3fe9ba0f34a05a5ab441f7b73ab0cae29807ee926df03411717cd1cd019da",
+ "size": 6808781,
+ "notes": "Agent replies notify you even with the app closed",
+ "built": "930f16eae4-24",
+ "published": "2026-11-06T13:25:53Z",
+ "url": "ShoebAI2.apk",
+ "urls": [
+  "https://raw.githubusercontent.com/shoebkan4u/hark-ai-chat-app/main/ShoebAI2.apk",
+  "https://shoebkan4u.github.io/hark-ai-chat-app/ShoebAI2.apk",
+  "https://github.com/shoebkan4u/hark-ai-chat-app/raw/main/ShoebAI2.apk"
+ ]
+}

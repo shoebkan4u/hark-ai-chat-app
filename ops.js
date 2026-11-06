@@ -712,7 +712,7 @@
     const render = () => {
       const s = load(cur); const atBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 80;
       list.innerHTML = '';
-      if (!s.msgs.length) list.append(el('div', { class: 'agent-empty', html: '<b>' + esc(lbl[cur]) + '</b><small>Runs on hark-a1 in ~/agents-chat/' + esc(cur) + '. Replies keep going if you close the app.</small>' }));
+      if (!s.msgs.length) list.append(el('div', { class: 'agent-empty', html: '<b>' + esc(lbl[cur]) + '</b><small>Runs on hark-a1 in ~/agents-chat/' + esc(cur) + '. Replies keep going if you close the app, and you get a notification when one lands.</small>' }));
       s.msgs.forEach((m) => {
         if (m.role === 'system') { list.append(el('div', { class: 'agent-sys', text: '— ' + m.text + ' —' })); return; }
         if (m.role === 'user') { list.append(el('div', { class: 'msg user' }, el('div', { class: 'bubble', text: m.text }))); return; }
@@ -737,7 +737,7 @@
         if (j.total < s.total) { s.msgs = []; s.total = 0; pulling = false; return pull(a); }
         if (j.msgs.length) { s.msgs = s.msgs.concat(j.msgs).slice(-200); s.total = j.total; s._jump = true; save(a); }
         const was = s.busy; s.busy = j.busy; s.partial = j.partial || '';
-        if (was && !j.busy && document.hidden && H.notify) H.notify(lbl[a] + ' replied', (s.msgs[s.msgs.length - 1] || {}).text || '');
+        if (was && !j.busy && document.hidden && H.notify && !(window.HarkNative && window.HarkNative.agentWatch)) H.notify(lbl[a] + ' replied', (s.msgs[s.msgs.length - 1] || {}).text || '');
         status.textContent = '';
       } catch (e) { status.textContent = 'Can\'t reach hark-a1: ' + (e.message || e); }
       pulling = false; if (a === cur) render();
@@ -752,6 +752,7 @@
       try {
         const r = JSON.parse(await run('~/bin/agent-chat send ' + cur + ' ' + b64(t)));
         s.msgs = s.msgs.filter((m) => !m._local);
+        if (r.ok) { try { const NN = window.HarkNative; if (NN && NN.agentWatch) NN.agentWatch(cur, s.total || 0); } catch (_) {} } // 1.1.17: notify when the reply lands, even with the app closed
         if (!r.ok) { status.textContent = r.error === 'busy' ? lbl[cur] + ' is still on the last message.' : (r.error || 'Not sent'); ta.value = t; }
       } catch (e) { s.msgs = s.msgs.filter((m) => !m._local); s.busy = false; ta.value = t; status.textContent = 'Not sent: ' + (e.message || e); }
       await pull(cur); loop();
