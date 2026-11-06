@@ -49,7 +49,7 @@
       location.reload();
     } catch (_) {}
   };
-  if (sessionStorage.getItem('hark.updatedFrom')) { sessionStorage.removeItem('hark.updatedFrom'); setTimeout(() => H.toast && H.toast('Updated to web build ' + H.version, 3500), 1500); }
+  if (sessionStorage.getItem('hark.updatedFrom')) { sessionStorage.removeItem('hark.updatedFrom'); setTimeout(() => H.toast && H.toast('Updated to Shoeb AI ' + H.release + ' (web ' + H.version + ')', 3500), 1500); }
   document.addEventListener('visibilitychange', () => { if (!document.hidden) setTimeout(checkWebUpdate, 1500); });
   setInterval(checkWebUpdate, 60 * 60e3);
   setTimeout(checkWebUpdate, 8000);

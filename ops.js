@@ -600,7 +600,7 @@
     try { c.fit.fit(); } catch (_) {}
     O.sshShellOpen(cbId, vm.id, c.term.cols || 100, c.term.rows || 30);
   }
-  ui.agents = (start) => {
+  ui.agentsTerm = (start) => {
     let cur = start || localStorage.getItem('hark.agentTab') || 'agy';
     const tabs = el('div', { class: 'agent-tabs' });
     const stage = el('div', { class: 'agent-stage' });
@@ -646,6 +646,99 @@
       document.removeEventListener('visibilitychange', onVis); window.removeEventListener('resize', onRes);
       Object.keys(agentConns).forEach((n) => { const c = agentConns[n]; c.alive = false; if (c.sid) O.sshShellClose(c.sid); if (c.cbId) H.nativeDone(c.cbId); try { c.term && c.term.dispose(); } catch (_) {} delete agentConns[n]; });
       prev && prev(); }; }
+    return close;
+  };
+
+  // Chat view for the coding agents (1.1.15): each message runs on hark-a1 via ~/bin/agent-chat, detached, so a reply
+  // keeps going when the app is closed; the app polls the server's log and shows it like the main chat.
+  ui.agents = (start) => {
+    let cur = start || localStorage.getItem('hark.agentTab') || 'agy';
+    const lbl = Object.fromEntries(AGENTS);
+    const cacheK = (a) => 'hark.agentChat.' + a;
+    const st = {}; // a -> {msgs,total,busy,partial}
+    const load = (a) => st[a] || (st[a] = Object.assign({ msgs: [], total: 0, busy: false, partial: '' }, jparse(localStorage.getItem(cacheK(a)), {})));
+    const save = (a) => { const s = st[a]; try { localStorage.setItem(cacheK(a), JSON.stringify({ msgs: s.msgs.slice(-80), total: s.total })); } catch (_) {} };
+    const tabs = el('div', { class: 'agent-tabs' });
+    const list = el('div', { class: 'agent-chat' });
+    const ta = el('textarea', { rows: 1, placeholder: 'Message', enterkeyhint: 'send' });
+    const sendB = el('button', { class: 'send', html: icon.send || '➤', 'aria-label': 'Send' });
+    const status = el('div', { class: 'agent-status' });
+    let timer = null, closed = false, pulling = false;
+    const vm = () => agentVm();
+    const run = async (cmd) => { const v = vm(); if (!v) throw new Error('No server. Add hark-a1 in Servers & terminal.'); const r = await ssh.exec(v.id, cmd, null, 60, true); return r.output; };
+    const b64 = (t) => btoa(unescape(encodeURIComponent(t)));
+    const render = () => {
+      const s = load(cur); const atBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 80;
+      list.innerHTML = '';
+      if (!s.msgs.length) list.append(el('div', { class: 'agent-empty', html: '<b>' + esc(lbl[cur]) + '</b><small>Runs on hark-a1 in ~/agents-chat/' + esc(cur) + '. Replies keep going if you close the app.</small>' }));
+      s.msgs.forEach((m) => {
+        if (m.role === 'system') { list.append(el('div', { class: 'agent-sys', text: '— ' + m.text + ' —' })); return; }
+        if (m.role === 'user') { list.append(el('div', { class: 'msg user' }, el('div', { class: 'bubble', text: m.text }))); return; }
+        const c = el('div', { class: 'content', html: H.ui.renderMarkdown ? H.ui.renderMarkdown(m.text) : esc(m.text) });
+        if (H.ui.wireContent) H.ui.wireContent(c);
+        list.append(el('div', { class: 'msg assistant' }, el('div', { class: 'agent-who', text: lbl[cur] + (m.rc ? ' · exit ' + m.rc : '') }), c,
+          el('div', { class: 'btns' }, el('button', { class: 'mini', text: 'Copy', onclick: () => H.copy(m.text) }))));
+      });
+      if (s.busy) {
+        const live = el('div', { class: 'msg assistant' }, el('div', { class: 'agent-who', text: lbl[cur] + ' · working…' }));
+        if (s.partial) live.append(el('pre', { class: 'agent-partial', text: s.partial.slice(-1500) })); else live.append(el('div', { class: 'typing', html: '<span></span><span></span><span></span>' }));
+        list.append(live);
+      }
+      if (atBottom || s._jump) { list.scrollTop = list.scrollHeight; s._jump = false; }
+      sendB.classList.toggle('stop', s.busy); sendB.innerHTML = s.busy ? (icon.stop || '■') : (icon.send || '➤');
+    };
+    const pull = async (a) => {
+      if (pulling) return; pulling = true;
+      const s = load(a);
+      try {
+        const j = JSON.parse(await run('~/bin/agent-chat log ' + a + ' ' + (s.total || 0)));
+        if (j.total < s.total) { s.msgs = []; s.total = 0; pulling = false; return pull(a); }
+        if (j.msgs.length) { s.msgs = s.msgs.concat(j.msgs).slice(-200); s.total = j.total; s._jump = true; save(a); }
+        const was = s.busy; s.busy = j.busy; s.partial = j.partial || '';
+        if (was && !j.busy && document.hidden && H.notify) H.notify(lbl[a] + ' replied', (s.msgs[s.msgs.length - 1] || {}).text || '');
+        status.textContent = '';
+      } catch (e) { status.textContent = 'Can\'t reach hark-a1: ' + (e.message || e); }
+      pulling = false; if (a === cur) render();
+    };
+    const loop = () => { clearTimeout(timer); if (closed) return; timer = setTimeout(async () => { if (!document.hidden) await pull(cur); loop(); }, load(cur).busy ? 2500 : 10000); };
+    const send = async () => {
+      const s = load(cur);
+      if (s.busy) { try { await run('~/bin/agent-chat stop ' + cur); } catch (_) {} return pull(cur); }
+      const t = ta.value.trim(); if (!t) return;
+      ta.value = ''; ta.style.height = 'auto';
+      s.msgs.push({ role: 'user', text: t, _local: true }); s.busy = true; s._jump = true; render();
+      try {
+        const r = JSON.parse(await run('~/bin/agent-chat send ' + cur + ' ' + b64(t)));
+        s.msgs = s.msgs.filter((m) => !m._local);
+        if (!r.ok) { status.textContent = r.error === 'busy' ? lbl[cur] + ' is still on the last message.' : (r.error || 'Not sent'); ta.value = t; }
+      } catch (e) { s.msgs = s.msgs.filter((m) => !m._local); s.busy = false; ta.value = t; status.textContent = 'Not sent: ' + (e.message || e); }
+      await pull(cur); loop();
+    };
+    sendB.onclick = send;
+    ta.addEventListener('input', () => { ta.style.height = 'auto'; ta.style.height = Math.min(ta.scrollHeight, 160) + 'px'; });
+    ta.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey && !('ontouchstart' in window)) { e.preventDefault(); send(); } });
+    const show = (a) => {
+      cur = a; localStorage.setItem('hark.agentTab', a);
+      tabs.querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.n === a));
+      load(a)._jump = true; render(); pull(a).then(loop);
+    };
+    AGENTS.forEach(([n, label]) => tabs.append(el('button', { class: 'chip', 'data-n': n, text: label, onclick: () => show(n) })));
+    const close = screen('Coding agents', (b) => {
+      if (appOnly(b)) return;
+      b.classList.add('termbody', 'agentbody');
+      b.append(el('div', { class: 'agent-top' }, tabs,
+        el('div', { class: 'btns' },
+          btn('New chat', async () => { try { await run('~/bin/agent-chat new ' + cur); } catch (e) { status.textContent = e.message; } pull(cur); }),
+          btn('Terminal', () => ui.agentsTerm(cur)))),
+        list, status,
+        el('div', { class: 'composer agent-composer' }, ta, el('div', { class: 'comp-row' }, el('div', { class: 'spacer' }), sendB)));
+    });
+    if (!O) return close;
+    show(cur);
+    const onVis = () => { if (!document.hidden && !closed) pull(cur).then(loop); };
+    document.addEventListener('visibilitychange', onVis);
+    const ov = H.state.overlays[H.state.overlays.length - 1];
+    if (ov) { const prev = ov.onClose; ov.onClose = () => { closed = true; clearTimeout(timer); document.removeEventListener('visibilitychange', onVis); prev && prev(); }; }
     return close;
   };
 

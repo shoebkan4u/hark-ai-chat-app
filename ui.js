@@ -236,6 +236,7 @@
     S.chat.messages.forEach((m) => th.append(renderMsg(m)));
   }
   ui.renderThread = renderThread;
+  ui.renderMarkdown = (t) => renderMarkdown(t); ui.wireContent = (n) => wireContent(n);
   function scrollBottom(force) { const sc = $('#scroller'); if (force || S.stick) sc.scrollTop = sc.scrollHeight; }
 
   // ---------------- markdown + artifacts ----------------

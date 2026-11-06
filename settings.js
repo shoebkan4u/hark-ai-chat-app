@@ -61,7 +61,7 @@
           approvalsRow(),
           row(icon.shield, 'Safety', 'When Shoeb AI asks before acting', SECTIONS.safety),
           row(icon.shield, 'Security & privacy', 'How keys and data are protected', SECTIONS.security),
-          row(icon.info, 'About & updates', 'Web ' + H.version + (N ? ' · app ' + N.version() : ''), SECTIONS.about)));
+          row(icon.info, 'About & updates', 'Version ' + H.release + ' · web ' + H.version, SECTIONS.about)));
     });
   };
 
@@ -477,7 +477,7 @@
   SECTIONS.about = () => screen('About & updates', (b) => {
     const out = el('div', { class: 'note' });
     b.append(el('div', { class: 'card' },
-      row(icon.info, 'Shoeb AI', 'Web build ' + H.version + (N ? ' · Android app ' + N.version() + ' (' + N.platform() + ')' : ' · browser')),
+      row(icon.info, 'Shoeb AI ' + H.release, 'Web build ' + H.version + (N ? ' · Android shell ' + N.version() + ' (' + N.platform() + ')' : ' · browser')),
       row(icon.retry, 'Reload latest interface', 'Fetches the newest web build', () => { if (N) N.reload(); else location.reload(); }),
       H.nativeUpdater ? null : row(icon.download, 'Check for a new app version', 'Downloads the newest APK', async () => { out.textContent = 'Checking…'; out.textContent = await H.checkApkUpdate(true); })),
       out,
