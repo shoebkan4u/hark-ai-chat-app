@@ -5,7 +5,7 @@
   const N = window.HarkNative || null;
   H.native = !!N;
   H.version = window.HARK_REMOTE_VERSION || 'dev';
-  H.release = '1.1.19'; // user-facing version; bump with every web update (the APK shell keeps its own number)
+  H.release = '1.1.20'; // user-facing version; bump with every web update (the APK shell keeps its own number)
 
   // ---------------- callbacks from native ----------------
   const handlers = new Map();

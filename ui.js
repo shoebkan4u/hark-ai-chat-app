@@ -95,6 +95,7 @@
         navItem(icon.clock, 'Scheduled tasks', () => { closeDrawer(); H.settingsUI.open('tasks'); }),
         navItem(icon.plug, 'Connections', () => { closeDrawer(); H.opsUI.connections(); }),
         navItem(icon.chart, 'Trade desk', () => { closeDrawer(); H.opsUI.trade(); }),
+        navItem(icon.chart, 'Charts', () => { closeDrawer(); H.opsUI.charts(); }),
         navItem(icon.brain, 'Antigravity', () => { closeDrawer(); H.opsUI.agents('agy'); }),
         navItem(icon.code, 'Kilo', () => { closeDrawer(); H.opsUI.agents('kilo'); }),
         navItem(icon.code, 'OpenCode', () => { closeDrawer(); H.opsUI.agents('opencode'); }),

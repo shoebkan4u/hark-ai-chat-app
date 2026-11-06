@@ -355,6 +355,81 @@
     return el('div', { class: 'chartcard' }, el('b', { text: c.title || 'Chart' }), c.subtitle ? el('small', { text: c.subtitle }) : null, el('div', { html: H.chartSvg(c.points) }));
   };
 
+  // ============================================================ 1.1.20 candle charts (HARK_CHARTS)
+  // OpenAlgo history → a small SVG candlestick chart with volume and level lines (entry, stop-loss, target).
+  const IV = { '1m': 2, '5m': 6, '15m': 12, '1h': 30, D: 220 };
+  H.fetchCandles = async function (acc, symbol, exchange, interval) {
+    interval = IV[interval] ? interval : '5m';
+    const end = new Date(Date.now() + 864e5).toISOString().slice(0, 10);
+    const start = new Date(Date.now() - IV[interval] * 864e5).toISOString().slice(0, 10);
+    const j = await H.oaCall(acc, 'history', { symbol: String(symbol).toUpperCase(), exchange: String(exchange || 'NSE').toUpperCase(), interval, start_date: start, end_date: end });
+    let d = j && j.data; if (d && !Array.isArray(d) && Array.isArray(d.candles)) d = d.candles;
+    if (!Array.isArray(d) || !d.length) throw new Error('No candles for ' + symbol + ' (' + interval + ')');
+    return d.map((x) => [H.num(x.timestamp || x.time), H.num(x.open), H.num(x.high), H.num(x.low), H.num(x.close), H.num(x.volume)]).filter((x) => x[2] > 0).slice(-120);
+  };
+  const LC = { entry: '#3b82f6', sl: '#ef4444', target: '#22c55e', ltp: '#a3a3a3' };
+  H.candleSvg = function (c) {
+    const cs = c.candles || []; if (!cs.length) return '<div class="note">No candles</div>';
+    const W = 360, PH = 200, VH = 40, PAD = 46, n = cs.length, bw = (W - PAD) / n;
+    const lines = (c.lines || []).filter((l) => l && +l.p > 0);
+    let hi = Math.max(...cs.map((x) => x[2])), lo = Math.min(...cs.map((x) => x[3]));
+    lines.forEach((l) => { hi = Math.max(hi, +l.p); lo = Math.min(lo, +l.p); });
+    const pad = (hi - lo) * 0.04 || hi * 0.01; hi += pad; lo -= pad;
+    const y = (p) => 6 + (hi - p) / (hi - lo) * (PH - 12);
+    const vmax = Math.max(1, ...cs.map((x) => x[5]));
+    let s = '<svg viewBox="0 0 ' + W + ' ' + (PH + VH + 14) + '" width="100%" style="display:block;font:9px sans-serif">';
+    for (let k = 0; k <= 4; k++) { const p = lo + (hi - lo) * k / 4, yy = y(p); s += '<line x1="0" x2="' + (W - PAD) + '" y1="' + yy + '" y2="' + yy + '" stroke="currentColor" stroke-opacity=".08"/><text x="' + (W - PAD + 3) + '" y="' + (yy + 3) + '" fill="currentColor" fill-opacity=".55">' + p.toFixed(p < 100 ? 2 : 1) + '</text>'; }
+    cs.forEach((x, i) => {
+      const cx = i * bw + bw / 2, up = x[4] >= x[1], col = up ? '#16a34a' : '#dc2626';
+      s += '<line x1="' + cx + '" x2="' + cx + '" y1="' + y(x[2]) + '" y2="' + y(x[3]) + '" stroke="' + col + '"/>';
+      const t = y(Math.max(x[1], x[4])), b = y(Math.min(x[1], x[4]));
+      s += '<rect x="' + (cx - bw * 0.35) + '" y="' + t + '" width="' + Math.max(1, bw * 0.7) + '" height="' + Math.max(1, b - t) + '" fill="' + col + '"/>';
+      const vh = x[5] / vmax * VH; s += '<rect x="' + (cx - bw * 0.35) + '" y="' + (PH + VH - vh) + '" width="' + Math.max(1, bw * 0.7) + '" height="' + vh + '" fill="' + col + '" fill-opacity=".35"/>';
+    });
+    lines.forEach((l) => {
+      const yy = y(+l.p), col = l.color || LC[l.k] || '#f59e0b';
+      s += '<line x1="0" x2="' + (W - PAD) + '" y1="' + yy + '" y2="' + yy + '" stroke="' + col + '" stroke-width="1.3" stroke-dasharray="5 3"/>';
+      s += '<rect x="' + (W - PAD) + '" y="' + (yy - 7) + '" width="' + PAD + '" height="13" fill="' + col + '"/><text x="' + (W - PAD + 2) + '" y="' + (yy + 3) + '" fill="#fff">' + (+l.p).toFixed(+l.p < 100 ? 2 : 1) + '</text>';
+      s += '<text x="3" y="' + (yy - 3) + '" fill="' + col + '" font-weight="bold">' + esc(l.label || '') + '</text>';
+    });
+    const fmt = (t) => { const d = new Date((t > 1e12 ? t : t * 1000)); return c.interval === 'D' ? d.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', timeZone: 'Asia/Kolkata' }) : d.toLocaleString('en-IN', { day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Asia/Kolkata' }); };
+    [0, Math.floor(n / 2), n - 1].forEach((i, k) => { s += '<text x="' + Math.min(W - PAD - 40, Math.max(0, i * bw - (k ? 20 : 0))) + '" y="' + (PH + VH + 12) + '" fill="currentColor" fill-opacity=".55">' + esc(fmt(cs[i][0])) + '</text>'; });
+    return s + '</svg>';
+  };
+  // Levels for a symbol from the Hermes trader ledgers on hark-a1 (entry, stop, target), read-only over SSH.
+  H.tradeLevels = async function (symbol) {
+    const vm = agentVm(); if (!O || !vm) return [];
+    const sym = String(symbol).toUpperCase().replace(/[^A-Z0-9&_-]/g, '');
+    const py = "import json,glob\\nout=[]\\nfor f in glob.glob('/var/lib/hermes-trader/*/ledger.json'):\\n  a=f.split('/')[-2]\\n  try: j=json.load(open(f))\\n  except Exception: continue\\n  P=j.get('positions') or {}\\n  if '" + sym + "' in P:\\n    p=P['" + sym + "']; out.append(dict(acct=a,entry=p.get('entry'),stop=p.get('stop'),target=p.get('target'),qty=p.get('qty')))\\n  for k,p in (j.get('open') or {}).items():\\n    if p.get('sym')=='" + sym + "': out.append(dict(acct=a+'/'+p.get('book',''),entry=p.get('entry'),stop=p.get('trail') or p.get('sl'),target=p.get('tp'),qty=p.get('qty')))\\nprint(json.dumps(out))";
+    try { const r = await ssh.exec(vm.id, 'echo ' + btoa(py.replace(/\\n/g, '\n')) + ' | base64 -d | python3', null, 25, true); return jparse(String(r.output).trim().split('\n').pop(), []); } catch (_) { return []; }
+  };
+  const ACCT = (acc) => (/wisdom/i.test(acc.name) ? ['wisdom', 'qlib_paper'] : /trade ?smart|tradesmart/i.test(acc.name) ? ['ts'] : /dhan/i.test(acc.name) ? ['dhan', 'dhtf'] : []);
+  H.levelLines = function (lv, acc, avg) {
+    const want = acc ? ACCT(acc) : [];
+    const m = lv.find((x) => want.some((w) => String(x.acct).startsWith(w))) || lv[0];
+    const out = [];
+    const e = m && +m.entry || +avg; if (e > 0) out.push({ k: 'entry', p: e, label: 'Entry' + (m ? ' · ' + m.acct : '') });
+    if (m && +m.stop > 0) out.push({ k: 'sl', p: +m.stop, label: 'SL' });
+    if (m && +m.target > 0 && +m.target < 1e8) out.push({ k: 'target', p: +m.target, label: 'Target' });
+    return out;
+  };
+  H.candleCard = function (c) {
+    const box = el('div', { class: 'chartcard candlecard' }, el('b', { text: c.title || 'Chart' }), c.subtitle ? el('small', { text: c.subtitle }) : null, el('div', { html: H.candleSvg(c) }));
+    if (c.lines && c.lines.length) box.append(el('small', { text: c.lines.map((l) => l.label + ' ' + (+l.p).toFixed(2)).join(' · ') }));
+    return box;
+  };
+  const baseCard = H.chartCard;
+  H.chartCard = (c) => (c && c.kind === 'candles' ? H.candleCard(c) : baseCard(c));
+  H.makeCandleChart = async function (a) {
+    const accs = H.oaAccounts(); const acc = accs.find((x) => x.id === a.account) || accs.find((x) => /wisdom/i.test(x.name)) || accs[0];
+    if (!acc) throw new Error('No OpenAlgo account. Import the Hark file first.');
+    const iv = a.interval || '5m';
+    const candles = await H.fetchCandles(acc, a.symbol, a.exchange, iv);
+    let lines = (a.lines || []).filter((l) => +l.p > 0);
+    if (!lines.length && a.with_levels !== false) lines = H.levelLines(await H.tradeLevels(a.symbol), acc, a.entry);
+    const last = candles[candles.length - 1][4];
+    return { kind: 'candles', title: String(a.symbol).toUpperCase() + ' · ' + iv, subtitle: (a.exchange || 'NSE').toUpperCase() + ' · ' + acc.name + ' · last ' + last, interval: iv, candles, lines };
+  };
   // ============================================================ chat tools
   H.opsTools = async function (add, t) {
     if (t.ops === false) return;
@@ -363,6 +438,9 @@
     if (H.oaAccounts().length) {
       add('strategies_list', 'List the built-in backtest strategies and their default parameters (the Hark runners also have their own strategies via backtest_start).', { type: 'object', properties: {} },
         () => Object.keys(STRATS).map((k) => ({ strategy: k, description: STRATS[k].desc, default_params: STRATS[k].params })), { label: 'Strategies', sum: () => Object.keys(STRATS).length + ' built in' });
+      add('show_chart', 'Show Shoeb a candlestick chart (with volume) of a symbol from OpenAlgo, right in the chat. For a symbol he holds as an open trade it draws the entry, stop-loss and target lines automatically from the Hermes trader ledgers. Read-only. Use whenever he asks for a chart.',
+        { type: 'object', properties: { symbol: { type: 'string' }, exchange: { type: 'string', description: 'NSE (default), BSE, NFO, MCX' }, interval: { type: 'string', enum: ['1m', '5m', '15m', '1h', 'D'] }, account: { type: 'string', enum: H.oaAccounts().map((a) => a.id) }, lines: { type: 'array', description: 'optional extra levels', items: { type: 'object', properties: { p: { type: 'number' }, label: { type: 'string' } } } } }, required: ['symbol'] },
+        async (a) => { const c = await H.makeCandleChart(a); return { shown_to_user: true, symbol: a.symbol, candles: c.candles.length, last_close: c.candles[c.candles.length - 1][4], levels: c.lines, chart: c }; }, { label: 'Chart', sum: (a) => a.symbol + ' · ' + (a.interval || '5m') });
       add('backtest_run', 'Run a backtest on the phone using OpenAlgo historical candles. Signals at bar close, fills next bar open, costs per side, optional stop/target, intraday square-off for minute bars, 70/30 in-sample/out-of-sample split, equity chart shown to the user. Strategies: ' + Object.keys(STRATS).join(', ') + '.',
         { type: 'object', properties: { account: { type: 'string', enum: H.oaAccounts().map((a) => a.id) }, symbol: { type: 'string' }, exchange: { type: 'string' }, interval: { type: 'string', description: '1m,3m,5m,15m,30m,1h,D' }, start_date: { type: 'string' }, end_date: { type: 'string' }, strategy: { type: 'string', enum: Object.keys(STRATS) }, params: { type: 'object' }, capital: { type: 'number', description: '₹ per trade (default 100000)' }, cost_bps: { type: 'number', description: 'cost per side in basis points (default 5)' }, long_only: { type: 'boolean' }, stop_loss_pct: { type: 'number' }, take_profit_pct: { type: 'number' } }, required: ['symbol', 'strategy'] },
         (a) => H.backtest(a), { label: 'Backtesting', sum: (a) => (a.symbol || '') + ' · ' + a.strategy + ' · ' + (a.interval || 'D') });
@@ -851,7 +929,7 @@
     const head = el('div', { class: 'tradehead ' + (live ? 'live' : 'paper') }, el('span', { class: 'modebadge ' + (live ? 'live' : 'paper'), text: live ? 'LIVE' : 'PAPER' }), el('span', { text: 'Loading…' }));
     b.append(head);
     const t = (kind, extra) => async () => { const r = await H.trade(kind, Object.assign({ account: acc.id }, extra || {})).catch((e) => ({ status: 'error', message: e.message })); if (r.status === 'sent_after_user_confirmation') setTimeout(redraw, 800); else if (r.status !== 'declined') H.toast(r.message || r.error || r.status, 4500); };
-    b.append(el('div', { class: 'btns' }, btn('New order', () => ui.orderForm(acc, 'place', {}, redraw), ''), btn('Smart order', () => ui.orderForm(acc, 'smart', {}, redraw)), btn('Basket', () => ui.basketForm(acc, redraw)), btn('Cancel all', t('cancel_all')), btn('Close all', t('close_all')), btn('Analyzer…', async () => { const on = await H.oaAnalyzer(acc); t('analyzer', { mode: !on })(); })));
+    b.append(el('div', { class: 'btns' }, btn('New order', () => ui.orderForm(acc, 'place', {}, redraw), ''), btn('Smart order', () => ui.orderForm(acc, 'smart', {}, redraw)), btn('Basket', () => ui.basketForm(acc, redraw)), btn('Charts', () => ui.charts({ account: acc.id })), btn('Cancel all', t('cancel_all')), btn('Close all', t('close_all')), btn('Analyzer…', async () => { const on = await H.oaAnalyzer(acc); t('analyzer', { mode: !on })(); })));
     const tabs = ['positions', 'orders', 'trades', 'holdings', 'funds']; const cur = H.state.tradeTab || 'positions';
     b.append(el('div', { class: 'seg', style: { marginTop: '10px' } }, tabs.map((x) => el('button', { class: x === cur ? 'on' : '', text: x[0].toUpperCase() + x.slice(1), onclick: () => { H.state.tradeTab = x; redraw(); } }))));
     const box = el('div', { class: 'card', style: { marginTop: '8px' } }, row(icon.info, 'Loading…', '')); b.append(box);
@@ -871,6 +949,7 @@
         if (cur === 'positions') {
           const q = H.num(x.quantity);
           box.append(el('div', { class: 'row' }, el('span', { class: 't', html: '<b>' + esc(x.symbol) + ' <small style="display:inline">' + esc(x.exchange + ' · ' + x.product) + '</small></b><small>Qty ' + esc(x.quantity) + ' · avg ' + esc(x.average_price) + ' · LTP ' + esc(x.ltp) + ' · P&L ' + esc(x.pnl) + '</small>' }),
+            btn('Chart', async () => { const lv = await H.tradeLevels(x.symbol); ui.charts({ account: acc.id, symbol: String(x.symbol).toUpperCase(), exchange: x.exchange, interval: '5m', entry: H.num(x.average_price), lines: H.levelLines(lv, acc, H.num(x.average_price)) }); }),
             q !== 0 ? btn('Exit', async () => { const r = await H.trade('smart', { account: acc.id, symbol: x.symbol, exchange: x.exchange, product: x.product, action: q > 0 ? 'SELL' : 'BUY', quantity: Math.abs(q), pricetype: 'MARKET', position_size: 0 }).catch((e) => ({ message: e.message })); if (r.status === 'sent_after_user_confirmation') setTimeout(redraw, 800); else if (r.status !== 'declined') H.toast(r.message || r.status, 4000); }) : null));
         } else if (cur === 'orders') {
           const open = /open|pending|trigger/i.test(x.order_status || x.status || '');
@@ -881,6 +960,29 @@
         }
       });
     }).catch((e) => { box.innerHTML = ''; box.append(row(icon.info, 'Couldn’t load ' + cur, e.message)); });
+  });
+
+  ui.charts = (pre) => screen('Charts', (b) => {
+    pre = pre || {};
+    const accs = H.oaAccounts();
+    if (!accs.length) { b.append(el('div', { class: 'note', text: 'Import the Hark file to connect TradeSmart and Wisdom.' })); return; }
+    const st = { acc: pre.account || H.state.chartAcc || (accs.find((x) => /wisdom/i.test(x.name)) || accs[0]).id, iv: pre.interval || H.state.chartIv || '5m' };
+    const sym = el('input', { value: pre.symbol || H.state.chartSym || '', placeholder: 'Symbol, e.g. SBIN', autocapitalize: 'characters' });
+    const ex = el('select', null, ['NSE', 'BSE', 'NFO', 'MCX'].map((o) => el('option', { value: o, text: o }))); ex.value = pre.exchange || 'NSE';
+    const accSeg = el('div', { class: 'seg' }); const ivSeg = el('div', { class: 'seg', style: { marginTop: '8px' } });
+    const out = el('div', { style: { marginTop: '10px' } });
+    const draw = async () => {
+      accSeg.innerHTML = ''; accs.forEach((a) => accSeg.append(el('button', { class: a.id === st.acc ? 'on' : '', text: a.name, onclick: () => { st.acc = a.id; H.state.chartAcc = a.id; draw(); } })));
+      ivSeg.innerHTML = ''; ['1m', '5m', '15m', '1h', 'D'].forEach((v) => ivSeg.append(el('button', { class: v === st.iv ? 'on' : '', text: v === 'D' ? 'Daily' : v, onclick: () => { st.iv = v; H.state.chartIv = v; draw(); } })));
+      const s = sym.value.trim().toUpperCase(); if (!s) { out.innerHTML = '<div class="note">Type a symbol and tap Show.</div>'; return; }
+      H.state.chartSym = s; out.innerHTML = '<div class="note">Loading ' + esc(s) + '…</div>';
+      try { const c = await H.makeCandleChart({ account: st.acc, symbol: s, exchange: ex.value, interval: st.iv, lines: pre.symbol === s ? pre.lines : null, entry: pre.symbol === s ? pre.entry : null }); out.innerHTML = ''; out.append(H.candleCard(c)); }
+      catch (e) { out.innerHTML = ''; out.append(el('div', { class: 'note', text: 'Couldn’t load chart: ' + (e.message || e) })); }
+    };
+    sym.addEventListener('keydown', (e) => { if (e.key === 'Enter') draw(); });
+    b.append(accSeg, el('div', { class: 'row', style: { gap: '6px' } }, sym, ex, btn('Show', draw, '')), ivSeg, out,
+      el('div', { class: 'note', text: 'Candles from OpenAlgo. Dashed lines: blue entry, red stop-loss, green target (from the Hermes trader ledgers on hark-a1 when the symbol is an open trade). Read-only.' }));
+    draw();
   });
 
   ui.orderForm = (acc, kind, pre, after) => H.ui.sheet((kind === 'modify' ? 'Modify order' : kind === 'smart' ? 'Smart order' : 'New order') + ' · ' + acc.name + (acc.mode === 'LIVE' ? ' LIVE' : ' PAPER'), (b, close) => {
