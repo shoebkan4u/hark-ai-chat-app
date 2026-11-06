@@ -762,6 +762,22 @@
       await pull(cur); loop();
     };
     sendB.onclick = send;
+    // 1.1.19: voice input (dictation) for Antigravity, Kilo and OpenCode, same as the main chat's mic. Tap to talk, tap again to finish.
+    let dict = null;
+    const micB = el('button', { class: 'cbtn plain', 'aria-label': 'Dictate', html: (icon.mic || '🎤') });
+    micB.onclick = () => {
+      if (dict) { dict.stop(); return; }
+      if (!H.ui.listen) { status.textContent = 'Voice input isn’t available here.'; return; }
+      const base = ta.value ? ta.value.replace(/\s*$/, ' ') : '';
+      micB.classList.add('dictating');
+      const grow = () => { ta.style.height = 'auto'; ta.style.height = Math.min(ta.scrollHeight, 160) + 'px'; setBtn(); };
+      const end = () => { micB.classList.remove('dictating'); dict = null; grow(); };
+      dict = H.ui.listen({
+        onPartial: (t) => { ta.value = base + t; grow(); },
+        onFinal: (t) => { ta.value = base + t; end(); },
+        onError: (e) => { if (e !== 'no_match' && e !== 'timeout') status.textContent = 'Mic: ' + e; end(); },
+      });
+    };
     ta.addEventListener('input', () => { ta.style.height = 'auto'; ta.style.height = Math.min(ta.scrollHeight, 160) + 'px'; setBtn(); });
     ta.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey && !('ontouchstart' in window)) { e.preventDefault(); send(); } });
     const show = (a) => {
@@ -778,7 +794,7 @@
           btn('New chat', async () => { try { await run('~/bin/agent-chat new ' + cur); } catch (e) { status.textContent = e.message; } pull(cur); }),
           btn('Terminal', () => ui.agentsTerm(cur)))),
         list, status,
-        el('div', { class: 'composer agent-composer' }, ta, el('div', { class: 'comp-row' }, el('div', { class: 'spacer' }), sendB)));
+        el('div', { class: 'composer agent-composer' }, ta, el('div', { class: 'comp-row' }, el('div', { class: 'spacer' }), micB, sendB)));
     });
     if (!O) return close;
     show(cur);
