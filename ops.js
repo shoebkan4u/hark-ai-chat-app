@@ -709,6 +709,9 @@
     const vm = () => agentVm();
     const run = async (cmd) => { const v = vm(); if (!v) throw new Error('No server. Add hark-a1 in Servers & terminal.'); const r = await ssh.exec(v.id, cmd, null, 60, true); return r.output; };
     const b64 = (t) => btoa(unescape(encodeURIComponent(t)));
+    // 1.1.18 (HARK_AGENTQ): you can keep sending while a reply runs; extra messages queue on hark-a1 and are answered in order.
+    // The button is Stop only while a reply runs AND the box is empty.
+    const setBtn = () => { const st = load(cur).busy && !ta.value.trim(); sendB.classList.toggle('stop', st); sendB.innerHTML = st ? (icon.stop || '■') : (icon.send || '➤'); };
     const render = () => {
       const s = load(cur); const atBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 80;
       list.innerHTML = '';
@@ -722,12 +725,12 @@
           el('div', { class: 'btns' }, el('button', { class: 'mini', text: 'Copy', onclick: () => H.copy(m.text) }))));
       });
       if (s.busy) {
-        const live = el('div', { class: 'msg assistant' }, el('div', { class: 'agent-who', text: lbl[cur] + ' · working…' }));
+        const live = el('div', { class: 'msg assistant' }, el('div', { class: 'agent-who', text: lbl[cur] + ' · working…' + (s.queued ? ' · ' + s.queued + ' more queued' : '') }));
         if (s.partial) live.append(el('pre', { class: 'agent-partial', text: s.partial.slice(-1500) })); else live.append(el('div', { class: 'typing', html: '<span></span><span></span><span></span>' }));
         list.append(live);
       }
       if (atBottom || s._jump) { list.scrollTop = list.scrollHeight; s._jump = false; }
-      sendB.classList.toggle('stop', s.busy); sendB.innerHTML = s.busy ? (icon.stop || '■') : (icon.send || '➤');
+      setBtn();
     };
     const pull = async (a) => {
       if (pulling) return; pulling = true;
@@ -736,7 +739,7 @@
         const j = JSON.parse(await run('~/bin/agent-chat log ' + a + ' ' + (s.total || 0)));
         if (j.total < s.total) { s.msgs = []; s.total = 0; pulling = false; return pull(a); }
         if (j.msgs.length) { s.msgs = s.msgs.concat(j.msgs).slice(-200); s.total = j.total; s._jump = true; save(a); }
-        const was = s.busy; s.busy = j.busy; s.partial = j.partial || '';
+        const was = s.busy; s.busy = j.busy; s.queued = j.queued || 0; s.partial = j.partial || '';
         if (was && !j.busy && document.hidden && H.notify && !(window.HarkNative && window.HarkNative.agentWatch)) H.notify(lbl[a] + ' replied', (s.msgs[s.msgs.length - 1] || {}).text || '');
         status.textContent = '';
       } catch (e) { status.textContent = 'Can\'t reach hark-a1: ' + (e.message || e); }
@@ -745,20 +748,21 @@
     const loop = () => { clearTimeout(timer); if (closed) return; timer = setTimeout(async () => { if (!document.hidden) await pull(cur); loop(); }, load(cur).busy ? 2500 : 10000); };
     const send = async () => {
       const s = load(cur);
-      if (s.busy) { try { await run('~/bin/agent-chat stop ' + cur); } catch (_) {} return pull(cur); }
-      const t = ta.value.trim(); if (!t) return;
+      const t = ta.value.trim();
+      if (!t) { if (s.busy) { try { await run('~/bin/agent-chat stop ' + cur); } catch (_) {} return pull(cur); } return; }
       ta.value = ''; ta.style.height = 'auto';
-      s.msgs.push({ role: 'user', text: t, _local: true }); s.busy = true; s._jump = true; render();
+      const lm = { role: 'user', text: t, _local: true }; s.msgs.push(lm); s.busy = true; s._jump = true; render();
       try {
         const r = JSON.parse(await run('~/bin/agent-chat send ' + cur + ' ' + b64(t)));
-        s.msgs = s.msgs.filter((m) => !m._local);
+        s.msgs = s.msgs.filter((m) => m !== lm);
         if (r.ok) { try { const NN = window.HarkNative; if (NN && NN.agentWatch) NN.agentWatch(cur, s.total || 0); } catch (_) {} } // 1.1.17: notify when the reply lands, even with the app closed
+        if (r.ok && r.queued) status.textContent = 'Queued — ' + lbl[cur] + ' will answer it after ' + (r.queued === 1 ? 'the current reply' : 'the ' + r.queued + ' messages ahead') + '.';
         if (!r.ok) { status.textContent = r.error === 'busy' ? lbl[cur] + ' is still on the last message.' : (r.error || 'Not sent'); ta.value = t; }
-      } catch (e) { s.msgs = s.msgs.filter((m) => !m._local); s.busy = false; ta.value = t; status.textContent = 'Not sent: ' + (e.message || e); }
+      } catch (e) { s.msgs = s.msgs.filter((m) => m !== lm); s.busy = false; ta.value = t; status.textContent = 'Not sent: ' + (e.message || e); }
       await pull(cur); loop();
     };
     sendB.onclick = send;
-    ta.addEventListener('input', () => { ta.style.height = 'auto'; ta.style.height = Math.min(ta.scrollHeight, 160) + 'px'; });
+    ta.addEventListener('input', () => { ta.style.height = 'auto'; ta.style.height = Math.min(ta.scrollHeight, 160) + 'px'; setBtn(); });
     ta.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey && !('ontouchstart' in window)) { e.preventDefault(); send(); } });
     const show = (a) => {
       cur = a; localStorage.setItem('hark.agentTab', a);

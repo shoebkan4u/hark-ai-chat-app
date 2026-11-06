@@ -8,7 +8,7 @@
   // runs: replies in flight, keyed by assistant message id → { ctrl, chat, am }. Up to MAX_RUNS stream at once
   // (each with its own tools and its own Stop); the rest wait in queue and show as "Queued".
   const MAX_RUNS = 3;
-  const S = { chat: null, runs: new Map(), queue: [], live: new Map(), active: 0, pending: [], overlays: [], drawerOpen: false, voice: null };
+  const S = { chat: null, runs: new Map(), chain: new Map(), queue: [], live: new Map(), active: 0, pending: [], overlays: [], drawerOpen: false, voice: null };
   Object.defineProperty(S, 'busy', { get: () => S.runs.size > 0 });
   H.state = S;
   /** Minimal "thinking" spinner: three dots orbiting, 14px (CSS: .orbit). Replaces the old brain icon. */
@@ -564,13 +564,18 @@
     if (opts.voice) S.voiceRun = am.id;
     const onScreen = () => chat === S.chat;
     if (onScreen()) { $('#thread').append(renderMsg(am)); scrollBottom(true); }
-    am.queued = S.active >= MAX_RUNS;
+    // 1.1.18 (HARK_AGENTQ): messages sent while a reply is running in the same chat wait their turn and are answered in
+    // order, each one seeing the earlier replies. Other chats still run in parallel (up to MAX_RUNS).
+    const prevRun = S.chain.get(chat.id); let doneRes; const mine = new Promise((r) => { doneRes = r; }); S.chain.set(chat.id, mine);
+    let released = false; const releaseChain = () => { if (released) return; released = true; doneRes(); if (S.chain.get(chat.id) === mine) S.chain.delete(chat.id); };
+    am.queued = !!prevRun || S.active >= MAX_RUNS;
     if (am.queued) refreshMsg(am, true);
+    if (prevRun) await new Promise((res) => { prevRun.then(res, res); ctrl.signal.addEventListener('abort', res, { once: true }); });
     const got = await acquireSlot(am.id);
     am.queued = false;
     if (!got || ctrl.signal.aborted) {
       if (got) releaseSlot();
-      S.runs.delete(am.id); if (!chatBusy(chat)) S.live.delete(chat.id);
+      S.runs.delete(am.id); if (!chatBusy(chat)) S.live.delete(chat.id); releaseChain();
       am.stopped = true; delete am.pending; am.content = am.content || '_(Cancelled before it started.)_';
       refreshMsg(am, false);
       if (onScreen()) await saveNow(); else await H.chats.put(chat);
@@ -671,7 +676,7 @@
     } finally {
       H.keepAlive(am.id, false); am.reconnecting = false; delete am.pending;
       if (signal.aborted) { am.stopped = true; if (!am.content.trim()) am.content = '_(Stopped.)_'; }
-      S.runs.delete(am.id); releaseSlot(); if (!chatBusy(chat)) S.live.delete(chat.id);
+      S.runs.delete(am.id); releaseSlot(); if (!chatBusy(chat)) S.live.delete(chat.id); releaseChain();
       if (S.voiceRun === am.id) S.voiceRun = null;
       am.steps.forEach((s) => { if (s.state === 'run') s.state = 'fail'; });
       if (raf) cancelAnimationFrame(raf);
