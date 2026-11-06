@@ -352,3 +352,9 @@ details.outcard pre.oout{font-family:ui-monospace,Menlo,monospace;font-size:12px
 /* 1.1.9 free-model usage numbers in the model picker */
 .opt .t small.use{font-size:11px;color:var(--muted);opacity:.85;margin-top:1px;font-variant-numeric:tabular-nums}
 .opt.zero{opacity:.45}
+
+/* 1.1.14 coding agents */
+.agent-tabs{display:flex;gap:6px;padding:6px 0;flex-wrap:wrap}
+.agent-tabs .chip.on{background:var(--accent,#4f8cff);color:#fff}
+.agent-stage{flex:1;min-height:0;display:flex;flex-direction:column;background:#0e0f12;border-radius:10px;overflow:hidden}
+.agent-term{flex:1;min-height:260px;height:100%;padding:4px}

@@ -565,6 +565,90 @@
     return close;
   };
 
+  // ----- Coding agents (1.1.14): Antigravity (agy), Kilo, OpenCode -----
+  // Each agent runs on hark-a1 in its own tmux session (socket "agents", kept alive by the agents-tmux systemd user
+  // service + agent-sessions.timer). The app only attaches to it, so closing or switching away never stops the agent;
+  // coming back re-attaches to the same screen.
+  const AGENTS = [['agy', 'Antigravity'], ['kilo', 'Kilo'], ['opencode', 'OpenCode']];
+  let xtermP = null;
+  const loadXterm = () => xtermP || (xtermP = new Promise((res, rej) => {
+    const css = document.createElement('link'); css.rel = 'stylesheet'; css.href = 'https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.css'; document.head.append(css);
+    const js = (src) => new Promise((ok, bad) => { const t = document.createElement('script'); t.src = src; t.onload = ok; t.onerror = () => bad(new Error('Could not load the terminal (' + src.split('/npm/')[1] + ')')); document.head.append(t); });
+    js('https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.js').then(() => js('https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.js')).then(res, (e) => { xtermP = null; rej(e); });
+  }));
+  const agentVm = () => { const v = ssh.vms(); return v.find((x) => /hark-a1/i.test(x.name || '') || x.host === '129.154.255.205') || v[0]; };
+  const agentConns = {}; // name -> {term, fit, sid, cbId, box, alive}
+  function agentConnect(name, c) {
+    const vm = agentVm(); if (!vm) { c.term.write('\r\nNo server set up. Add hark-a1 in Servers & terminal.\r\n'); return; }
+    if (c.cbId) { try { H.nativeDone(c.cbId); } catch (_) {} }
+    const cbId = H.newId('agt'); c.cbId = cbId; c.sid = null;
+    c.term.write('\r\n\x1b[90mConnecting to ' + esc(vm.name || vm.host) + '…\x1b[0m\r\n');
+    H.nativeCallRaw(cbId, (type, d) => {
+      if (cbId !== c.cbId) return;
+      if (type === 'open') {
+        c.sid = d.sid;
+        // attach to the always-running session (created on the spot if the keeper hasn't yet)
+        O.sshShellWrite(c.sid, "stty -echo; clear; tmux -L agents has-session -t " + name + " 2>/dev/null || ~/bin/agent-sessions; exec tmux -L agents attach -d -t " + name + "\n");
+        setTimeout(() => { try { c.fit.fit(); O.sshShellResize(c.sid, c.term.cols, c.term.rows); } catch (_) {} }, 600);
+      } else if (type === 'data') c.term.write(d.t);
+      else if (type === 'closed' || type === 'err') {
+        c.sid = null; H.nativeDone(cbId);
+        c.term.write('\r\n\x1b[90m[' + (type === 'err' ? 'connection error: ' + (d.message || '') : 'detached') + ' — ' + name + ' keeps running on the server]\x1b[0m\r\n');
+        if (c.alive && !document.hidden) setTimeout(() => { if (c.alive && !c.sid) agentConnect(name, c); }, 3000);
+      }
+    });
+    try { c.fit.fit(); } catch (_) {}
+    O.sshShellOpen(cbId, vm.id, c.term.cols || 100, c.term.rows || 30);
+  }
+  ui.agents = (start) => {
+    let cur = start || localStorage.getItem('hark.agentTab') || 'agy';
+    const tabs = el('div', { class: 'agent-tabs' });
+    const stage = el('div', { class: 'agent-stage' });
+    const input = el('input', { class: 'term-in', placeholder: 'Type here, Enter sends', autocapitalize: 'off', autocomplete: 'off', spellcheck: 'false' });
+    const send = (t) => { const c = agentConns[cur]; if (c && c.sid) O.sshShellWrite(c.sid, t); };
+    const keys = [['Enter', '\r'], ['Esc', '\x1b'], ['Tab', '\t'], ['⇧Tab', '\x1b[Z'], ['↑', '\x1b[A'], ['↓', '\x1b[B'], ['←', '\x1b[D'], ['→', '\x1b[C'], ['Ctrl-C', '\x03'], ['/', '/']];
+    const show = async (name) => {
+      cur = name; localStorage.setItem('hark.agentTab', name);
+      tabs.querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.n === name));
+      Object.values(agentConns).forEach((c) => { c.box.style.display = 'none'; });
+      let c = agentConns[name];
+      if (!c) {
+        const box = el('div', { class: 'agent-term' }); stage.append(box);
+        c = agentConns[name] = { box, alive: true };
+        try { await loadXterm(); } catch (e) { box.textContent = e.message; return; }
+        c.term = new window.Terminal({ fontSize: 12, cursorBlink: true, scrollback: 5000, convertEol: false, theme: { background: '#0e0f12' }, fontFamily: 'ui-monospace, Menlo, monospace' });
+        c.fit = new window.FitAddon.FitAddon(); c.term.loadAddon(c.fit); c.term.open(box);
+        c.term.onData((t) => { if (c.sid) O.sshShellWrite(c.sid, t); });
+        c.term.onResize(({ cols, rows }) => { if (c.sid) O.sshShellResize(c.sid, cols, rows); });
+        agentConnect(name, c);
+      }
+      c.alive = true; c.box.style.display = '';
+      setTimeout(() => { try { c.fit.fit(); c.term.focus(); } catch (_) {} }, 50);
+    };
+    AGENTS.forEach(([n, label]) => tabs.append(el('button', { class: 'chip', 'data-n': n, text: label, onclick: () => show(n) })));
+    const close = screen('Coding agents · hark-a1', (b) => {
+      if (appOnly(b)) return;
+      b.classList.add('termbody');
+      input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); send(input.value + '\r'); input.value = ''; } });
+      b.append(tabs, stage,
+        el('div', { class: 'term-keys' }, keys.map(([l, sq]) => el('button', { class: 'chip', text: l, onclick: () => send(sq) })),
+          el('button', { class: 'chip', text: 'Reconnect', onclick: () => { const c = agentConns[cur]; if (c) { if (c.sid) O.sshShellClose(c.sid); c.sid = null; agentConnect(cur, c); } } })),
+        el('div', { class: 'term-row' }, input, el('button', { class: 'btn', text: 'Send', onclick: () => { send(input.value + '\r'); input.value = ''; } })),
+        el('div', { class: 'note', text: 'These run on hark-a1 in always-on sessions. Leaving this screen or the app only detaches; the agent keeps working and you return to the same screen.' }));
+    });
+    if (!O) return close;
+    show(cur);
+    const onVis = () => { if (!document.hidden) Object.entries(agentConns).forEach(([n, c]) => { if (c.alive && !c.sid && c.term) agentConnect(n, c); }); };
+    const onRes = H.debounce ? H.debounce(() => { const c = agentConns[cur]; try { c && c.fit && c.fit.fit(); } catch (_) {} }, 200) : () => {};
+    document.addEventListener('visibilitychange', onVis); window.addEventListener('resize', onRes);
+    const ov = H.state.overlays[H.state.overlays.length - 1];
+    if (ov) { const prev = ov.onClose; ov.onClose = () => {
+      document.removeEventListener('visibilitychange', onVis); window.removeEventListener('resize', onRes);
+      Object.keys(agentConns).forEach((n) => { const c = agentConns[n]; c.alive = false; if (c.sid) O.sshShellClose(c.sid); if (c.cbId) H.nativeDone(c.cbId); try { c.term && c.term.dispose(); } catch (_) {} delete agentConns[n]; });
+      prev && prev(); }; }
+    return close;
+  };
+
   // ----- Oracle Cloud -----
   ui.oci = () => screen('Oracle Cloud', (b, redraw) => {
     if (appOnly(b)) return;
