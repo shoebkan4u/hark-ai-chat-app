@@ -664,6 +664,48 @@
     const sendB = el('button', { class: 'send', html: icon.send || '➤', 'aria-label': 'Send' });
     const status = el('div', { class: 'agent-status' });
     let timer = null, closed = false, pulling = false;
+    // Model picker for the coding agents (1.1.16): same sheet style as the main chat. List comes from `<agent> models` on hark-a1.
+    const mods = {}; // a -> {current, models}
+    const modelBtn = el('button', { class: 'model-btn agent-model', onclick: () => pickModel() });
+    const setModelBtn = () => { const m = mods[cur]; const c = m && m.current; const lab = c ? (((m.models || []).find((x) => x.id === c) || {}).label || c) : 'Default model';
+      modelBtn.innerHTML = '<span>' + esc(lab) + '</span>' + (icon.chev || '▾'); };
+    const loadModels = async (a, force) => {
+      if (mods[a] && !force) return mods[a];
+      try { mods[a] = JSON.parse(await run('~/bin/agent-chat models ' + a)); } catch (e) { mods[a] = mods[a] || { current: '', models: [], error: e.message || String(e) }; }
+      if (a === cur) setModelBtn(); return mods[a];
+    };
+    const pickModel = () => H.ui.sheet(lbl[cur] + ' model', (b, close) => {
+      const a = cur;
+      const q = el('input', { placeholder: 'Search models', style: { border: 0, outline: 0, background: 'transparent', flex: 1, fontSize: '15px' } });
+      const list = el('div');
+      b.append(el('label', { class: 'search', style: { margin: '0 4px 6px' }, html: icon.search || '' }, q), list);
+      const choose = async (id) => {
+        close();
+        try { const r = JSON.parse(await run('~/bin/agent-chat model ' + a + ' ' + (id || 'default'))); mods[a] = Object.assign(mods[a] || {}, { current: r.current || '' }); }
+        catch (e) { status.textContent = 'Model not changed: ' + (e.message || e); }
+        setModelBtn(); pull(a);
+      };
+      const opt = (id, label, sub) => { const sel = ((mods[a] || {}).current || '') === id;
+        return el('button', { class: 'opt', onclick: () => choose(id) }, el('span', { class: 't', html: esc(label) + (/free/i.test(id) ? '<span class="badge">free</span>' : '') + (sub ? '<small>' + esc(sub) + '</small>' : '') }),
+          sel ? el('span', { class: 'check', html: icon.check || '✓' }) : null); };
+      const draw = () => {
+        list.innerHTML = ''; const m = mods[a] || { models: [] }; const term = q.value.toLowerCase().trim();
+        const hit = (x) => !term || x.id.toLowerCase().includes(term) || (x.label || '').toLowerCase().includes(term);
+        if (!term) list.append(opt('', 'Default model', a === 'kilo' ? 'kilo-auto/free (from kilo.jsonc)' : a === 'agy' ? 'Antigravity default' : 'OpenCode default'));
+        const ms = (m.models || []).filter(hit);
+        const free = ms.filter((x) => /free/i.test(x.id));
+        if (free.length) { list.append(el('div', { class: 'mp-group', text: 'Free (' + free.length + ')' })); free.forEach((x) => list.append(opt(x.id, x.label === x.id ? x.id.split('/').slice(1).join('/') || x.id : x.label, x.id))); }
+        const by = {};
+        ms.filter((x) => !/free/i.test(x.id)).forEach((x) => { const parts = x.id.split('/'); const g = a === 'agy' ? 'Models' : (parts.length > 2 ? parts[1].replace(/^~/, '') : parts[0]); (by[g] = by[g] || []).push(x); });
+        Object.keys(by).sort().forEach((g) => { list.append(el('div', { class: 'mp-group', text: g + ' (' + by[g].length + ')' }));
+          by[g].forEach((x) => list.append(opt(x.id, x.label === x.id ? x.id.split('/').pop() : x.label, x.id))); });
+        if (!ms.length) list.append(el('div', { class: 'note', style: { padding: '12px' }, text: m.error ? 'Can\'t load models: ' + m.error : term ? 'No models match.' : 'Loading…' }));
+        list.append(el('div', { class: 'note', style: { padding: '8px 12px' }, text: 'Applies to the next message in ' + lbl[a] + '. Paid models need credits on that account.' }));
+        list.append(el('button', { class: 'btn ghost', style: { margin: '4px 12px 12px' }, text: 'Refresh model list', onclick: async (e) => { e.target.disabled = true; e.target.textContent = 'Refreshing…'; try { await run('rm -f ~/agents-chat/' + a + '/.models.json'); } catch (_) {} await loadModels(a, true); draw(); } }));
+      };
+      q.oninput = draw; draw();
+      loadModels(a).then(() => { if (list.isConnected) draw(); });
+    });
     const vm = () => agentVm();
     const run = async (cmd) => { const v = vm(); if (!v) throw new Error('No server. Add hark-a1 in Servers & terminal.'); const r = await ssh.exec(v.id, cmd, null, 60, true); return r.output; };
     const b64 = (t) => btoa(unescape(encodeURIComponent(t)));
@@ -720,13 +762,13 @@
     const show = (a) => {
       cur = a; localStorage.setItem('hark.agentTab', a);
       tabs.querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.n === a));
-      load(a)._jump = true; render(); pull(a).then(loop);
+      load(a)._jump = true; render(); setModelBtn(); pull(a).then(loop); loadModels(a);
     };
     AGENTS.forEach(([n, label]) => tabs.append(el('button', { class: 'chip', 'data-n': n, text: label, onclick: () => show(n) })));
     const close = screen('Coding agents', (b) => {
       if (appOnly(b)) return;
       b.classList.add('termbody', 'agentbody');
-      b.append(el('div', { class: 'agent-top' }, tabs,
+      b.append(el('div', { class: 'agent-top' }, tabs, modelBtn,
         el('div', { class: 'btns' },
           btn('New chat', async () => { try { await run('~/bin/agent-chat new ' + cur); } catch (e) { status.textContent = e.message; } pull(cur); }),
           btn('Terminal', () => ui.agentsTerm(cur)))),
