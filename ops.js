@@ -376,6 +376,7 @@
     lines.forEach((l) => { hi = Math.max(hi, +l.p); lo = Math.min(lo, +l.p); });
     const pad = (hi - lo) * 0.04 || hi * 0.01; hi += pad; lo -= pad;
     const y = (p) => 6 + (hi - p) / (hi - lo) * (PH - 12);
+    c._sc = { hi, lo, PH, H: PH + VH + 14 };
     const vmax = Math.max(1, ...cs.map((x) => x[5]));
     let s = '<svg viewBox="0 0 ' + W + ' ' + (PH + VH + 14) + '" width="100%" style="display:block;font:9px sans-serif">';
     for (let k = 0; k <= 4; k++) { const p = lo + (hi - lo) * k / 4, yy = y(p); s += '<line x1="0" x2="' + (W - PAD) + '" y1="' + yy + '" y2="' + yy + '" stroke="currentColor" stroke-opacity=".08"/><text x="' + (W - PAD + 3) + '" y="' + (yy + 3) + '" fill="currentColor" fill-opacity=".55">' + p.toFixed(p < 100 ? 2 : 1) + '</text>'; }
@@ -390,32 +391,69 @@
       const yy = y(+l.p), col = l.color || LC[l.k] || '#f59e0b';
       s += '<line x1="0" x2="' + (W - PAD) + '" y1="' + yy + '" y2="' + yy + '" stroke="' + col + '" stroke-width="1.3" stroke-dasharray="5 3"/>';
       s += '<rect x="' + (W - PAD) + '" y="' + (yy - 7) + '" width="' + PAD + '" height="13" fill="' + col + '"/><text x="' + (W - PAD + 2) + '" y="' + (yy + 3) + '" fill="#fff">' + (+l.p).toFixed(+l.p < 100 ? 2 : 1) + '</text>';
-      s += '<text x="3" y="' + (yy - 3) + '" fill="' + col + '" font-weight="bold">' + esc(l.label || '') + '</text>';
+      s += '<text x="3" y="' + (yy - 3) + '" fill="' + col + '" font-weight="bold">' + esc(l.label || '') + (c.trade && (l.k === 'sl' || l.k === 'target') ? ' ⇕' : '') + '</text>';
+      if (c.trade && (l.k === 'sl' || l.k === 'target')) s += '<rect class="lvlhit" data-k="' + l.k + '" x="0" y="' + (yy - 11) + '" width="' + W + '" height="22" fill="transparent" style="cursor:ns-resize"/>';
     });
     const fmt = (t) => { const d = new Date((t > 1e12 ? t : t * 1000)); return c.interval === 'D' ? d.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', timeZone: 'Asia/Kolkata' }) : d.toLocaleString('en-IN', { day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Asia/Kolkata' }); };
     [0, Math.floor(n / 2), n - 1].forEach((i, k) => { s += '<text x="' + Math.min(W - PAD - 40, Math.max(0, i * bw - (k ? 20 : 0))) + '" y="' + (PH + VH + 12) + '" fill="currentColor" fill-opacity=".55">' + esc(fmt(cs[i][0])) + '</text>'; });
     return s + '</svg>';
   };
   // Levels for a symbol from the Hermes trader ledgers on hark-a1 (entry, stop, target), read-only over SSH.
-  H.tradeLevels = async function (symbol) {
-    const vm = agentVm(); if (!O || !vm) return [];
-    const sym = String(symbol).toUpperCase().replace(/[^A-Z0-9&_-]/g, '');
-    const py = "import json,glob\\nout=[]\\nfor f in glob.glob('/var/lib/hermes-trader/*/ledger.json'):\\n  a=f.split('/')[-2]\\n  try: j=json.load(open(f))\\n  except Exception: continue\\n  P=j.get('positions') or {}\\n  if '" + sym + "' in P:\\n    p=P['" + sym + "']; out.append(dict(acct=a,entry=p.get('entry'),stop=p.get('stop'),target=p.get('target'),qty=p.get('qty')))\\n  for k,p in (j.get('open') or {}).items():\\n    if p.get('sym')=='" + sym + "': out.append(dict(acct=a+'/'+p.get('book',''),entry=p.get('entry'),stop=p.get('trail') or p.get('sl'),target=p.get('tp'),qty=p.get('qty')))\\nprint(json.dumps(out))";
-    try { const r = await ssh.exec(vm.id, 'echo ' + btoa(py.replace(/\\n/g, '\n')) + ' | base64 -d | python3', null, 25, true); return jparse(String(r.output).trim().split('\n').pop(), []); } catch (_) { return []; }
-  };
+  // 1.1.21: levels come from ~/bin/trade-levels on hark-a1 (HARK_LEVELS_20261106), which also changes them and requests square-offs.
+  const lvRun = async (args, t) => { const vm = agentVm(); if (!O || !vm) throw new Error('No server: add hark-a1 in Servers & terminal.'); const r = await ssh.exec(vm.id, 'sudo -n /usr/local/bin/trade-levels ' + args, null, t || 40, true); const j = jparse(String(r.output).trim().split('\n').pop(), null); if (!j) throw new Error(String(r.output).slice(-200) || 'No reply'); return j; };
+  const symOk = (x) => String(x || '').toUpperCase().replace(/[^A-Z0-9&_.-]/g, '');
+  H.tradeLevels = async function (symbol) { try { return (await lvRun('get ' + symOk(symbol))).rows || []; } catch (_) { return []; } };
+  H.openTrades = async () => (await lvRun('list')).rows || [];
   const ACCT = (acc) => (/wisdom/i.test(acc.name) ? ['wisdom', 'qlib_paper'] : /trade ?smart|tradesmart/i.test(acc.name) ? ['ts'] : /dhan/i.test(acc.name) ? ['dhan', 'dhtf'] : []);
   H.levelLines = function (lv, acc, avg) {
     const want = acc ? ACCT(acc) : [];
     const m = lv.find((x) => want.some((w) => String(x.acct).startsWith(w))) || lv[0];
     const out = [];
     const e = m && +m.entry || +avg; if (e > 0) out.push({ k: 'entry', p: e, label: 'Entry' + (m ? ' · ' + m.acct : '') });
+    if (m) out.trade = { acct: m.acct, live: !!m.live, qty: m.qty };
     if (m && +m.stop > 0) out.push({ k: 'sl', p: +m.stop, label: 'SL' });
     if (m && +m.target > 0 && +m.target < 1e8) out.push({ k: 'target', p: +m.target, label: 'Target' });
     return out;
   };
   H.candleCard = function (c) {
-    const box = el('div', { class: 'chartcard candlecard' }, el('b', { text: c.title || 'Chart' }), c.subtitle ? el('small', { text: c.subtitle }) : null, el('div', { html: H.candleSvg(c) }));
-    if (c.lines && c.lines.length) box.append(el('small', { text: c.lines.map((l) => l.label + ' ' + (+l.p).toFixed(2)).join(' · ') }));
+    const svgBox = el('div', { html: H.candleSvg(c) });
+    const info = el('small', null);
+    const box = el('div', { class: 'chartcard candlecard' }, el('b', { text: c.title || 'Chart' }), c.subtitle ? el('small', { text: c.subtitle }) : null, svgBox, info);
+    const showInfo = () => { info.textContent = (c.lines || []).map((l) => l.label + ' ' + (+l.p).toFixed(2)).join(' · '); };
+    showInfo();
+    const T = c.trade; if (!T || !O) return box;
+    const tag = T.acct.toUpperCase() + (T.live ? ' · LIVE' : ' · PAPER');
+    // 1.1.21: drag the SL / Target line; on release a confirm card changes the level the trader follows.
+    const wire = () => {
+      const svg = svgBox.querySelector('svg'); if (!svg) return; svg.style.touchAction = 'none';
+      svg.querySelectorAll('.lvlhit').forEach((h) => h.addEventListener('pointerdown', (ev) => {
+        ev.preventDefault(); const k = h.dataset.k; const L = c.lines.find((l) => l.k === k); if (!L) return; const old = +L.p;
+        svg.setPointerCapture(ev.pointerId);
+        const toP = (cy) => { const r = svg.getBoundingClientRect(); const vy = (cy - r.top) * (c._sc.H / r.height); const sc = c._sc; return Math.max(0.05, sc.hi - (vy - 6) / (sc.PH - 12) * (sc.hi - sc.lo)); };
+        const mv = (e) => { L.p = Math.round(toP(e.clientY) * 20) / 20; const keep = c._sc; svgBox.innerHTML = H.candleSvg(c); c._sc = keep; showInfo(); };
+        const up = async () => {
+          svg.removeEventListener('pointermove', mv); svg.removeEventListener('pointerup', up); svg.removeEventListener('pointercancel', up);
+          const nv = +(+L.p).toFixed(2); svgBox.innerHTML = H.candleSvg(c); wire();
+          if (Math.abs(nv - old) < 0.01) return;
+          const what = k === 'sl' ? 'stop' : 'target';
+          const r = await H.ui.ticket({ badge: T.live ? 'LIVE' : 'PAPER', source: tag + ' · Hermes trader', headline: 'Move ' + (k === 'sl' ? 'stop-loss' : 'target') + ' · ' + T.sym,
+            cells: [['Account', tag], ['Symbol', T.sym], ['Was', String(old)], ['New', String(nv)]],
+            warn: 'The trader will exit ' + T.sym + ' when the price hits this level.', goText: 'Change',
+            run: async () => { const j = await lvRun(['set', T.acct, T.sym, what, nv].join(' ')); if (!j.ok) throw new Error(j.error || 'Not changed'); return true; } }).catch((e) => ({ error: e.message }));
+          if (!r || !r.confirmed || r.error) { L.p = old; if (r && r.error) H.toast(r.error, 5000); } else H.toast(T.sym + ' ' + what + ' → ' + nv, 3000);
+          svgBox.innerHTML = H.candleSvg(c); wire(); showInfo();
+        };
+        svg.addEventListener('pointermove', mv); svg.addEventListener('pointerup', up); svg.addEventListener('pointercancel', up);
+      }));
+    };
+    wire();
+    box.append(el('div', { class: 'btns', style: { marginTop: '6px' } }, el('button', { class: 'btn ghost', text: 'Square off', onclick: async () => {
+      const r = await H.ui.ticket({ badge: T.live ? 'LIVE' : 'PAPER', source: tag + ' · Hermes trader', headline: 'Square off ' + T.sym + (T.qty ? ' × ' + T.qty : ''),
+        cells: [['Account', tag], ['Symbol', T.sym], ['Qty', String(T.qty || '')], ['Order', T.live ? 'Market SELL via the approval pop-up' : 'Paper exit at the next manage run']],
+        warn: T.live ? 'LIVE: this sends a Sell request; the order is placed when you approve the pop-up.' : 'Paper position: no broker order.', goText: 'Square off',
+        run: async () => { const j = await lvRun(['squareoff', T.acct, T.sym].join(' '), 100); if (!j.ok) throw new Error(j.error || 'Failed'); H.toast(j.note || 'Done', 5000); return true; } }).catch((e) => ({ error: e.message }));
+      if (r && r.error) H.toast(r.error, 6000);
+    } })));
     return box;
   };
   const baseCard = H.chartCard;
@@ -428,7 +466,8 @@
     let lines = (a.lines || []).filter((l) => +l.p > 0);
     if (!lines.length && a.with_levels !== false) lines = H.levelLines(await H.tradeLevels(a.symbol), acc, a.entry);
     const last = candles[candles.length - 1][4];
-    return { kind: 'candles', title: String(a.symbol).toUpperCase() + ' · ' + iv, subtitle: (a.exchange || 'NSE').toUpperCase() + ' · ' + acc.name + ' · last ' + last, interval: iv, candles, lines };
+    const trade = lines.trade || (a.trade || null);
+    return { kind: 'candles', trade: trade ? Object.assign({ sym: String(a.symbol).toUpperCase() }, trade) : null, title: String(a.symbol).toUpperCase() + ' · ' + iv, subtitle: (a.exchange || 'NSE').toUpperCase() + ' · ' + acc.name + ' · last ' + last, interval: iv, candles, lines };
   };
   // ============================================================ chat tools
   H.opsTools = async function (add, t) {
@@ -647,7 +686,7 @@
   // Each agent runs on hark-a1 in its own tmux session (socket "agents", kept alive by the agents-tmux systemd user
   // service + agent-sessions.timer). The app only attaches to it, so closing or switching away never stops the agent;
   // coming back re-attaches to the same screen.
-  const AGENTS = [['agy', 'Antigravity'], ['kilo', 'Kilo'], ['opencode', 'OpenCode']];
+  const AGENTS = [['agy', 'Antigravity'], ['kilo', 'Kilo'], ['opencode', 'OpenCode'], ['claude', 'Claude Code']];
   let xtermP = null;
   const loadXterm = () => xtermP || (xtermP = new Promise((res, rej) => {
     const css = document.createElement('link'); css.rel = 'stylesheet'; css.href = 'https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.css'; document.head.append(css);
@@ -949,7 +988,7 @@
         if (cur === 'positions') {
           const q = H.num(x.quantity);
           box.append(el('div', { class: 'row' }, el('span', { class: 't', html: '<b>' + esc(x.symbol) + ' <small style="display:inline">' + esc(x.exchange + ' · ' + x.product) + '</small></b><small>Qty ' + esc(x.quantity) + ' · avg ' + esc(x.average_price) + ' · LTP ' + esc(x.ltp) + ' · P&L ' + esc(x.pnl) + '</small>' }),
-            btn('Chart', async () => { const lv = await H.tradeLevels(x.symbol); ui.charts({ account: acc.id, symbol: String(x.symbol).toUpperCase(), exchange: x.exchange, interval: '5m', entry: H.num(x.average_price), lines: H.levelLines(lv, acc, H.num(x.average_price)) }); }),
+            btn('Chart', async () => { const lv = await H.tradeLevels(x.symbol); const ll = H.levelLines(lv, acc, H.num(x.average_price)); ui.charts({ account: acc.id, symbol: String(x.symbol).toUpperCase(), exchange: x.exchange, interval: '5m', entry: H.num(x.average_price), lines: ll, trade: ll.trade }); }),
             q !== 0 ? btn('Exit', async () => { const r = await H.trade('smart', { account: acc.id, symbol: x.symbol, exchange: x.exchange, product: x.product, action: q > 0 ? 'SELL' : 'BUY', quantity: Math.abs(q), pricetype: 'MARKET', position_size: 0 }).catch((e) => ({ message: e.message })); if (r.status === 'sent_after_user_confirmation') setTimeout(redraw, 800); else if (r.status !== 'declined') H.toast(r.message || r.status, 4000); }) : null));
         } else if (cur === 'orders') {
           const open = /open|pending|trigger/i.test(x.order_status || x.status || '');
@@ -976,11 +1015,17 @@
       ivSeg.innerHTML = ''; ['1m', '5m', '15m', '1h', 'D'].forEach((v) => ivSeg.append(el('button', { class: v === st.iv ? 'on' : '', text: v === 'D' ? 'Daily' : v, onclick: () => { st.iv = v; H.state.chartIv = v; draw(); } })));
       const s = sym.value.trim().toUpperCase(); if (!s) { out.innerHTML = '<div class="note">Type a symbol and tap Show.</div>'; return; }
       H.state.chartSym = s; out.innerHTML = '<div class="note">Loading ' + esc(s) + '…</div>';
-      try { const c = await H.makeCandleChart({ account: st.acc, symbol: s, exchange: ex.value, interval: st.iv, lines: pre.symbol === s ? pre.lines : null, entry: pre.symbol === s ? pre.entry : null }); out.innerHTML = ''; out.append(H.candleCard(c)); }
+      try { const c = await H.makeCandleChart({ account: st.acc, symbol: s, exchange: ex.value, interval: st.iv, lines: pre.symbol === s ? pre.lines : null, trade: pre.symbol === s ? (pre.trade || (pre.lines && pre.lines.trade)) : null, entry: pre.symbol === s ? pre.entry : null }); out.innerHTML = ''; out.append(H.candleCard(c)); }
       catch (e) { out.innerHTML = ''; out.append(el('div', { class: 'note', text: 'Couldn’t load chart: ' + (e.message || e) })); }
     };
     sym.addEventListener('keydown', (e) => { if (e.key === 'Enter') draw(); });
-    b.append(accSeg, el('div', { class: 'row', style: { gap: '6px' } }, sym, ex, btn('Show', draw, '')), ivSeg, out,
+    const ot = el('div', { class: 'card', style: { marginTop: '10px' } }, el('div', { class: 'note', text: 'Loading open trades…' }));
+    H.openTrades().then((rs) => { ot.innerHTML = ''; ot.append(el('div', { class: 'sec', text: 'Open trades (all accounts)' }));
+      if (!rs.length) ot.append(el('div', { class: 'note', text: 'No open trades.' }));
+      rs.forEach((x) => ot.append(el('div', { class: 'row' }, el('span', { class: 't', html: '<b>' + esc(x.sym) + ' <small style="display:inline">' + esc(x.acct.toUpperCase() + (x.live ? ' · LIVE' : ' · PAPER')) + '</small></b><small>Qty ' + esc(x.qty) + ' · entry ' + esc(x.entry) + ' · SL ' + esc(x.stop == null ? '–' : x.stop) + ' · T ' + esc(x.target == null ? '–' : x.target) + '</small>' }),
+        btn('Chart', () => { const lines = H.levelLines([x], null, x.entry); pre = { symbol: x.sym, exchange: 'NSE', lines, trade: lines.trade, entry: x.entry }; sym.value = x.sym; ex.value = 'NSE'; draw(); out.scrollIntoView({ behavior: 'smooth' }); }))));
+    }).catch((e) => { ot.innerHTML = ''; ot.append(el('div', { class: 'note', text: 'Open trades unavailable: ' + (e.message || e) })); });
+    b.append(accSeg, el('div', { class: 'row', style: { gap: '6px' } }, sym, ex, btn('Show', draw, '')), ivSeg, out, ot,
       el('div', { class: 'note', text: 'Candles from OpenAlgo. Dashed lines: blue entry, red stop-loss, green target (from the Hermes trader ledgers on hark-a1 when the symbol is an open trade). Read-only.' }));
     draw();
   });
