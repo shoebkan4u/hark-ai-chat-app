@@ -99,6 +99,8 @@
         navItem(icon.brain, 'Antigravity', () => { closeDrawer(); H.opsUI.agents('agy'); }),
         navItem(icon.code, 'Kilo', () => { closeDrawer(); H.opsUI.agents('kilo'); }),
         navItem(icon.code, 'OpenCode', () => { closeDrawer(); H.opsUI.agents('opencode'); }),
+        navItem(icon.code, 'Claude Code', () => { closeDrawer(); H.opsUI.agents('claude'); }),
+        navItem(icon.globe, 'ZeroClaw', () => { closeDrawer(); H.opsUI.zeroclaw(); }),
         navItem(icon.code, 'Servers & terminal', () => { closeDrawer(); H.opsUI.servers(); }),
         navItem(icon.globe, 'Oracle Cloud', () => { closeDrawer(); H.opsUI.oci(); }),
         navItem(icon.retry, 'Backtest', () => { closeDrawer(); H.opsUI.backtest(); }),

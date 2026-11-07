@@ -922,6 +922,15 @@
     return close;
   };
 
+  // ----- ZeroClaw dashboard (tailnet only; ZeroClaw sends X-Frame-Options DENY, so it opens in the in-app browser) -----
+  const ZEROCLAW_URL = 'https://hark-a1.tailfd19de.ts.net:8443/';
+  ui.zeroclaw = () => screen('ZeroClaw', (b) => {
+    b.append(el('div', { class: 'note', text: 'Needs Tailscale on this phone. First time: enter the pairing code from the server (journalctl --user -u zeroclaw | grep -i pair).' }),
+      el('div', { class: 'card' }, row(icon.globe, 'ZeroClaw dashboard', ZEROCLAW_URL)),
+      el('div', { class: 'note', text: 'ZeroClaw does not allow being embedded, so the dashboard opens in the in-app browser. It is reachable only on your tailnet.' }),
+      el('div', { class: 'btns' }, btn('Open dashboard', () => H.openExternal(ZEROCLAW_URL), '')));
+  });
+
   // ----- Oracle Cloud -----
   ui.oci = () => screen('Oracle Cloud', (b, redraw) => {
     if (appOnly(b)) return;
