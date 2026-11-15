@@ -2,6 +2,7 @@
 (function () {
   'use strict';
   const H = window.Hark;
+  const PH = H.vault.PH; // vault placeholder, e.g. {{vault:abc123}}
 
   // ---------------- providers ----------------
   const SKIP_RE = /embedding|moderation|ocr|tts|audio|speech|vision|image|transcribe|translate|whisper|tts|diarization|rerank|classify|edit|instruct|completion|chat-bison|text-bison|code-bison|embedding-gecko|qa|search|summarize|classification|sentiment|entity|ner|pos|dependency|parse|translate|transliterate|detect-language|language-detection/i;
