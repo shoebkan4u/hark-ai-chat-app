@@ -333,6 +333,15 @@
   H.askFirst = (k) => !!(H.settings && H.settings.safety && H.settings.safety[k]);
   H.settings = (() => { try { return deepMerge(DEFAULT_SETTINGS, JSON.parse(localStorage.getItem('hark.settings') || '{}')); } catch (_) { return deepMerge(DEFAULT_SETTINGS, {}); } })();
   H.saveSettings = () => localStorage.setItem('hark.settings', JSON.stringify(H.settings));
+  // deepMerge replaces arrays, so a saved account list hides accounts added later. Add any built-in
+  // OpenAlgo account the saved settings don't have yet (keeps the user's own base/mode for the rest).
+  (function migrateAccounts() {
+    if (!Array.isArray(H.settings.openalgo)) H.settings.openalgo = [];
+    const have = new Set(H.settings.openalgo.map((a) => a.id));
+    let added = false;
+    DEFAULT_SETTINGS.openalgo.forEach((d) => { if (!have.has(d.id)) { H.settings.openalgo.push(Object.assign({}, d)); added = true; } });
+    if (added) H.saveSettings();
+  })();
 
   // ---------------- chat storage (IndexedDB) ----------------
   let dbp = null;
