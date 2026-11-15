@@ -1,88 +1,168 @@
-/* Shoeb AI — core: vault, settings, network, storage, memory, helpers, icons. */
+/* Hark AI — core: native bridge, network, vault, storage, small UI helpers. */
 (function () {
   'use strict';
-  const H = window.Hark;
-  const N = window.HarkNative;
-  const newId = (p) => p + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
-  const PH = (id) => '{{vault:' + id + '}}';
-  const handlers = new Map();
-  let nativeListeners = [];
+  const H = (window.Hark = window.Hark || {});
+  const N = window.HarkNative || null;
+  H.native = !!N;
+  H.version = window.HARK_REMOTE_VERSION || 'dev';
+  H.release = '1.1.23'; // user-facing version; bump with every web update (the APK shell keeps its own number)
 
-  // ---------------- vault (encrypted key/value with metadata) ----------------
-  // Keys are stored with: id, label, provider, host, order, type, created, slots[], openalgo[], knowledge, vms[], tunnels[], runners[], oci{}, cloudflare
-  // Values are kept in the native vault (Android Keystore) or a WebCrypto fallback (IndexedDB + PBKDF2).
-  // The native vault is the source of truth when available.
+  // ---------------- callbacks from native ----------------
+  const handlers = new Map();
+  let seq = 0;
+  const newId = (p) => (p || 'r') + (++seq) + '_' + Math.random().toString(36).slice(2, 8);
+  H.newId = newId;
+  const nativeListeners = [];
+  H.onNative = (fn) => nativeListeners.push(fn);
+
+  function nativeCall(fnName, ...args) {
+    return new Promise((resolve, reject) => {
+      const id = newId(fnName);
+      handlers.set(id, (type, data) => {
+        handlers.delete(id);
+        if (type === 'err') reject(H.nativeError(data));
+        else resolve(data);
+      });
+      try { N[fnName](id, ...args); } catch (e) { handlers.delete(id); reject(e); }
+    });
+  }
+  H.nativeCall = nativeCall;
+  // Server/cloud operations live on a second native object (window.HarkOps).
+  const O = window.HarkOps || null;
+  H.opsNative = !!O;
+  function opsCall(fnName, ...args) {
+    return new Promise((resolve, reject) => {
+      if (!O) return reject(new Error('This needs the Shoeb AI Android app'));
+      const id = newId(fnName);
+      handlers.set(id, (type, data) => {
+        handlers.delete(id);
+        if (type === 'err') { const e = H.nativeError(data); if (data && data.hostKey) { e.hostKey = data.hostKey; e.keyType = data.keyType; } reject(e); }
+        else resolve(data);
+      });
+      try { O[fnName](id, ...args); } catch (e) { handlers.delete(id); reject(e); }
+    });
+  }
+  H.opsCall = opsCall;
+  H.O = O;
+  /** Exact request key the native WriteGuard hashes: "METHOD url\nbody". */
+  H.reqKey = (method, url, body) => String(method || 'GET').toUpperCase() + ' ' + url + '\n' + (body == null ? '' : body);
+  /**
+   * One-time native approvals (WriteGuard tokens) for exact requests, fetched after the user's tap on a ticket or
+   * in-chat card. No fingerprint/PIN from 1.1.8 (apps up to 1.1.7 still show their own native prompt until they update).
+   * Throws (e.notApproved) if refused. In a plain browser it falls back to confirm().
+   */
+  H.approve = async function (title, keys) {
+    if (O) {
+      const r = await opsCall('approveWrite', title, JSON.stringify(keys));
+      if (!r || !r.ok) { const e = new Error('Not confirmed'); e.notApproved = true; throw e; }
+      return r.tokens;
+    }
+    // Plain browser (no app): no confirm() dialog either; the tickets / Safety switches are the only confirmation.
+    return keys.map(() => 'browser');
+  };
+  H.nativeCallRaw = (id, fn) => handlers.set(id, fn);
+
+  // ---------------- dropped connections ----------------
+  /**
+   * 'dropped' | 'timeout' | null. Android kills sockets when the app goes to the background
+   * (ECONNABORTED, "Software caused connection abort"); the 1.1.7 shell tags those errors with a code,
+   * older shells only send the raw message.
+   */
+  const DROP_RE = /software caused connection abort|ECONNABORTED|ECONNRESET|EPIPE|connection reset|broken pipe|socket (is )?closed|SocketException|connection (was )?(closed|aborted|dropped)|stream (was )?reset|unexpected end of stream|broken transport|encountered EOF|network connection was lost/i;
+  const TIMEOUT_RE = /timed? ?out\b|ETIMEDOUT|SocketTimeoutException|\btimeout\b/i;
+  H.netErr = function (e) {
+    if (!e) return null;
+    if (e.name === 'AbortError') return null;
+    if (e.code === 'dropped' || e.code === 'timeout') return e.code;
+    if (e.status) return null; // an HTTP-level error (e.g. 504 Gateway Timeout) is a server answer, not a dropped link
+    const m = String(e.message || e);
+    if (/Unable to resolve host|UnknownHost|Connection refused|ECONNREFUSED/i.test(m)) return null;
+    if (DROP_RE.test(m)) return 'dropped';
+    if (TIMEOUT_RE.test(m)) return 'timeout';
+    return null;
+  };
+  H.nativeError = (d) => { const e = new Error((d && d.message) || 'Native error'); if (d && d.code) e.code = d.code; if (d && d.readOnly != null) e.readOnly = d.readOnly; return e; };
+  /** App in the foreground? Native onResume/onPause events (1.1.7+) and page visibility. */
+  H.appFg = !(typeof document !== 'undefined' && document.hidden);
+  const fgWaiters = [];
+  const setFg = (fg) => { H.appFg = fg; if (fg) fgWaiters.splice(0).forEach((f) => f()); };
+  H.onNative((type, d) => { if (type === 'app' && d) setFg(!!d.foreground); });
+  if (typeof document !== 'undefined') document.addEventListener('visibilitychange', () => setFg(!document.hidden));
+  /** Resolves once the app is in the foreground (at once if it already is), or when signal aborts. */
+  H.whenForeground = (signal) => new Promise((res) => {
+    if (H.appFg) return res();
+    fgWaiters.push(res);
+    if (signal) signal.addEventListener('abort', () => res());
+  });
+  /** 1.1.14: a connection dropped mid-reply. Back off and try again even while the app is in the background (the
+   *  native foreground service + wake lock keep the process and network up), so switching apps never stops a reply.
+   *  Only after ~3 min of failed tries in the background does it wait for the app to come back to the front. */
+  const RETRY_WAITS = [1500, 3000, 5000, 8000, 12000, 15000, 20000, 30000, 30000, 30000, 30000];
+  H.retryPause = async (attempt, signal) => {
+    if (signal && signal.aborted) return;
+    if (!H.appFg && attempt >= RETRY_WAITS.length) { await H.whenForeground(signal); await H.sleep(500); return; }
+    const ms = H.appFg ? Math.min(RETRY_WAITS[Math.min(attempt, RETRY_WAITS.length - 1)], 5000) : RETRY_WAITS[Math.min(attempt, RETRY_WAITS.length - 1)];
+    await new Promise((res) => { const t = setTimeout(res, ms); if (signal) signal.addEventListener('abort', () => { clearTimeout(t); res(); }, { once: true }); });
+  };
+  /** 1.1.14: a phone notification (needs the Android shell; no-op in the browser). */
+  H.notify = (title, body) => { try { if (N && N.notify) N.notify(String(title || 'Shoeb AI').slice(0, 80), String(body || '').slice(0, 3000)); } catch (_) {} };
+  /** Keep the process (foreground service + wake lock) alive while a reply or command runs. */
+  H.keepAlive = (tag, on) => { try { if (N && N.keepAlive) N.keepAlive(String(tag), !!on); } catch (_) {} };
+  H.nativeDone = (id) => handlers.delete(id);
+
+  // ---------------- vault ----------------
+  // Native: values live in the Android Keystore vault and never enter JS.
+  // Browser fallback (for testing on the web): values are kept in this browser's localStorage.
+  const PH = (id) => '{{vault:' + id + '}}';
   const PROVIDER_HOSTS = {
-    gemini: ['generativelanguage.googleapis.com'],
-    openai: ['api.openai.com', 'api.anthropic.com', 'api.groq.com', 'openrouter.ai', 'api.mistral.ai', 'api.cohere.ai', 'api.deepinfra.com', 'api.together.xyz', 'api.fireworks.ai', 'api.perplexity.ai', 'api.x.ai', 'api.deepseek.com'],
-    openalgo: ['127.0.0.1', 'localhost', '[::1]', '100.111.56.19', 'hark-a1', 'hark-a2', '10.0.0.68'], // Tailscale IPs + local
-    ssh_key: [], ssh_pass: [], oci_key: [], oauth: [], cloudflare: [],
+    openrouter: ['openrouter.ai'], groq: ['api.groq.com'], cohere: ['api.cohere.ai', 'api.cohere.com'],
+    nvidia: ['integrate.api.nvidia.com'], gemini: ['generativelanguage.googleapis.com'], xai: ['api.x.ai'], huggingface: ['huggingface.co'], cloudflare: ['api.cloudflare.com'],
+    openalgo: ['127.0.0.1', 'localhost', '[::1]', '100.111.56.19', 'hark-a1', 'hark-a2', '10.0.0.68'], // hark-a2 local + hark-a1 over Tailscale
   };
   const webVault = {
-    async open() {
-      if (this.db) return this.db;
-      return new Promise((res, rej) => {
-        const r = indexedDB.open('hark-vault', 2);
-        r.onupgradeneeded = () => {
-          const d = r.result;
-          if (!d.objectStoreNames.contains('keys')) d.createObjectStore('keys', { keyPath: 'id' });
-          if (!d.objectStoreNames.contains('vals')) d.createObjectStore('vals', { keyPath: 'id' });
-          if (!d.objectStoreNames.contains('meta')) d.createObjectStore('meta');
-        };
-        r.onsuccess = () => { this.db = r.result; res(this.db); };
-        r.onerror = () => rej(r.error);
-      });
+    load() { try { return JSON.parse(localStorage.getItem('hark.webvault') || '{"index":[],"v":{}}'); } catch (_) { return { index: [], v: {} }; } },
+    save(d) { localStorage.setItem('hark.webvault', JSON.stringify(d)); },
+  };
+  function preview(v) { v = String(v || '').trim(); return v.length <= 8 ? '••••' : v.slice(0, 4) + '…' + v.slice(-4); }
+
+  H.vault = {
+    PH,
+    list() {
+      if (N) { try { return JSON.parse(N.vaultList()); } catch (_) { return []; } }
+      return webVault.load().index;
     },
-    async list() {
-      const d = await this.open();
-      return new Promise((res, rej) => {
-        const t = d.transaction('keys', 'readonly');
-        const req = t.objectStore('keys').getAll();
-        req.onsuccess = () => res(req.result || []); req.onerror = () => rej(req.error);
+    put(meta, value) {
+      if (N) return N.vaultPut(JSON.stringify(meta), value);
+      const d = webVault.load();
+      let id = meta.id || '';
+      d.index = d.index.filter((m) => {
+        if ((id && m.id === id) || (!id && m.label === meta.label && m.provider === meta.provider)) { id = m.id; return false; }
+        return true;
       });
+      if (!id) id = Math.random().toString(36).slice(2, 12) + Date.now().toString(36);
+      d.index.push({ id, label: meta.label, provider: meta.provider, host: (meta.host || '').toLowerCase(), order: meta.order || 1, type: meta.type || 'api_key', preview: preview(value), updated: Date.now() });
+      d.v[id] = String(value).trim();
+      webVault.save(d);
+      return id;
     },
-    async get(id) {
-      const d = await this.open();
-      return new Promise((res, rej) => {
-        const t = d.transaction('vals', 'readonly');
-        const req = t.objectStore('vals').get(id);
-        req.onsuccess = () => { const v = req.result; res(v ? v.value : null); }; req.onerror = () => rej(req.error);
-      });
+    del(id) {
+      if (N) return N.vaultDelete(id);
+      const d = webVault.load(); d.index = d.index.filter((m) => m.id !== id); delete d.v[id]; webVault.save(d);
     },
-    async put(meta, value) {
-      const id = meta.id || newId('k');
-      const d = await this.open();
-      return new Promise((res, rej) => {
-        const t = d.transaction(['keys', 'vals'], 'readwrite');
-        t.objectStore('keys').put(Object.assign({ id, created: Date.now() }, meta));
-        t.objectStore('vals').put({ id, value });
-        t.oncomplete = () => res(id); t.onerror = () => rej(t.error);
-      });
-    },
-    async del(id) {
-      const d = await this.open();
-      return new Promise((res, rej) => {
-        const t = d.transaction(['keys', 'vals'], 'readwrite');
-        t.objectStore('keys').delete(id); t.objectStore('vals').delete(id);
-        t.oncomplete = () => res(); t.onerror = () => rej(t.error);
-      });
-    },
-    byProvider(p) { return this.list().then((a) => a.filter((k) => k.provider === p).sort((a, b) => (a.order || 1) - (b.order || 1))); },
     async setHost(id, host) {
-      const d = await this.open();
-      return new Promise((res, rej) => {
-        const t = d.transaction('keys', 'readwrite');
-        const req = t.objectStore('keys').get(id);
-        req.onsuccess = () => {
-          const k = req.result; if (!k) { res(false); return; }
-          k.host = host; t.objectStore('keys').put(k); t.oncomplete = () => res(true); t.onerror = () => rej(t.error);
-        }; req.onerror = () => rej(req.error);
-      });
+      if (N) { const r = await nativeCall('vaultSetHost', id, host); return r && r.ok; }
+      if (!confirm('Allow this key to be sent to ' + host + '?')) return false;
+      const d = webVault.load(); d.index.forEach((m) => { if (m.id === id) m.host = host.toLowerCase(); }); webVault.save(d); return true;
     },
+    byProvider(provider) {
+      return this.list().filter((m) => m.provider === provider).sort((a, b) => (a.order || 1) - (b.order || 1));
+    },
+    has(provider) { return this.byProvider(provider).length > 0; },
+    // Browser fallback only: resolve placeholders with the same host rule the native side enforces.
     _resolve(text, url) {
-      if (!text || !text.includes('{{vault:')) return text;
+      if (!text || text.indexOf('{{vault:') < 0) return text;
       const host = new URL(url).host.toLowerCase();
-      const d = this.load();
+      const d = webVault.load();
       return text.replace(/\{\{vault:([A-Za-z0-9_-]{4,64})\}\}/g, (_, id) => {
         const m = d.index.find((x) => x.id === id);
         if (!m) throw new Error('Unknown vault entry');
@@ -90,14 +170,6 @@
         if (!ok) throw new Error('Key "' + m.label + '" is saved for ' + m.host + ', not ' + host);
         return d.v[id];
       });
-    },
-    load() {
-      try {
-        const ks = JSON.parse(localStorage.getItem('hark.vault.keys') || '[]');
-        const vs = JSON.parse(localStorage.getItem('hark.vault.vals') || '[]');
-        const v = {}; vs.forEach((x) => { v[x.id] = x.value; });
-        return { index: ks, v };
-      } catch (_) { return { index: [], v: {} }; }
     },
     async importFile(text, passphrase) {
       if (N) return nativeCall('importEncrypted', text, passphrase);
@@ -230,7 +302,7 @@
     autoFallback: true, tools: { web: true, openalgo: true, mcp: true, memory: true, ops: true },
     voice: { autoSpeak: false, rate: 1.0, lang: 'en-IN' },
     openalgo: [
-      // hark-a2 (local) — paper accounts
+      // hark-a2 (this machine) — all PAPER
       { id: 'flattrade', name: 'Flattrade', base: 'http://127.0.0.1:5000', mode: 'PAPER', provider: 'openalgo:flattrade' },
       { id: 'shoonya', name: 'Shoonya (Finvasia)', base: 'http://127.0.0.1:5001', mode: 'PAPER', provider: 'openalgo:shoonya' },
       { id: 'sharekhan', name: 'Sharekhan', base: 'http://127.0.0.1:5002', mode: 'PAPER', provider: 'openalgo:sharekhan' },
@@ -307,7 +379,7 @@
     for (const k of kids.flat()) if (k != null && k !== false) e.append(k.nodeType ? k : document.createTextNode(String(k)));
     return e;
   };
-  H.esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&', '<': '<', '>': '>', '"': '"', "'": '&#39;' }[c]));
+  H.esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   H.debounce = (fn, ms) => { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; };
   H.sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   H.toast = (msg, ms) => {
@@ -353,7 +425,7 @@
     down: P('<path d="M17 14V3M9 18.1 10 14H4.2a2 2 0 0 1-2-2.3l1.4-7A2 2 0 0 1 5.6 3H17v11l-4.3 7.2a1.7 1.7 0 0 1-3.1-1.2z"/>'),
     speak: P('<path d="M11 5 6 9H3v6h3l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7M19 5a10 10 0 0 1 0 14"/>'),
     search: P('<circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>'),
-    gear: P('<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8-.3l-.1.1a2 2 0 1 1-2.8-2.8l.1.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/>'),
+    gear: P('<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/>'),
     folder: P('<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>'),
     chat: P('<path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12z"/>'),
     camera: P('<path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/>'),
