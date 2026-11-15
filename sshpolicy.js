@@ -38,8 +38,7 @@
           if (d === '$' && s[j + 1] === '(') { const k = closeParen(j + 2); sub(s.slice(j + 2, k)); w += 'x'; j = k + 1; continue; }
           w += d; j++;
         }
-        i = j + 1; continue;
-      }
+        i = j + 1; continue; }
       if (c === '`') { const k = s.indexOf('`', i + 1); if (k < 0) throw new Bad('unclosed backtick'); sub(s.slice(i + 1, k)); w += 'x'; inWord = true; i = k + 1; continue; }
       if (c === '$' && s[i + 1] === '(') {
         if (s[i + 2] === '(') throw new Bad('arithmetic');
@@ -207,8 +206,18 @@
       /\b(init|telinit)\s+[06]\b/.test(c) ||
       (/\bdocker\b/.test(c) && /openalgo/i.test(c) && /\b(rm|stop|kill|restart|down|rmi|prune|pause|update|rename|exec|run|compose|up)\b/.test(c)) ||
       /openalgo-tradesmart/i.test(c) ||
+      /openalgo-wisdom/i.test(c) ||
+      /openalgo-flattrade/i.test(c) ||
+      /openalgo-shoonya/i.test(c) ||
+      /openalgo-sharekhan/i.test(c) ||
       /(^|[\s'"=:;&|(/~])wisdom(\/|\s|$|['";&|)])/i.test(c) ||
-      /(~|\$HOME|\$\{HOME\}|\/home\/[^/\s]+)\/wisdom\b/i.test(c);
+      /(^|[\s'"=:;&|(/~])flattrade(\/|\s|$|['";&|)])/i.test(c) ||
+      /(^|[\s'"=:;&|(/~])shoonya(\/|\s|$|['";&|)])/i.test(c) ||
+      /(^|[\s'"=:;&|(/~])sharekhan(\/|\s|$|['";&|)])/i.test(c) ||
+      /(~|\$HOME|\$\{HOME\}|\/home\/[^/\s]+)\/wisdom\b/i.test(c) ||
+      /(~|\$HOME|\$\{HOME\}|\/home\/[^/\s]+)\/flattrade\b/i.test(c) ||
+      /(~|\$HOME|\$\{HOME\}|\/home\/[^/\s]+)\/shoonya\b/i.test(c) ||
+      /(~|\$HOME|\$\{HOME\}|\/home\/[^/\s]+)\/sharekhan\b/i.test(c);
   }
   // 1.1.8: no ticket at all unless the user turned "Ask before SSH commands that change things" on; protected commands included.
   const needsTicket = (c, askChanges) => !!askChanges && !classify(c).readOnly;
