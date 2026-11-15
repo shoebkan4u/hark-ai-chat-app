@@ -1,11 +1,11 @@
-/* Hark AI — providers, live model catalog, streaming chat with multi-key failover. */
+/* Shoeb AI — LLM catalog, keys, streaming, fallback, Auto (Long chats), model health. */
 (function () {
   'use strict';
   const H = window.Hark;
-  const PH = H.vault.PH;
 
-  const VISION_RE = /(vision|[-_.]vl\b|-vl-|\bvl\b|omni|llama-4|llama4|gemma-?3|gemma-?4|pixtral|gemini|grok-4|grok-2-vision|qwen3\.[5-9]|qwen2\.5-vl|minimax-m3|nemotron.*vl|kimi-k2\.[5-9]|mistral-(small|medium)-3)/i;
-  const SKIP_RE = /(embed|rerank|guard|safety|reward|whisper|tts|speech|transcri|audio|parse|retriever|nv-clip|clip|vila|deplot|kosmos|paligemma|image-gen|flux|sdxl|stable-diffusion|playai|orpheus|moderation|bge|e5-|arctic-embed|cosmos|ocdr|nemoretriever|-detect|translate|aqa|imagen|veo|lyria|native-audio|computer-use)/i;
+  // ---------------- providers ----------------
+  const SKIP_RE = /embedding|moderation|ocr|tts|audio|speech|vision|image|transcribe|translate|whisper|tts|diarization|rerank|classify|edit|instruct|completion|chat-bison|text-bison|code-bison|embedding-gecko|qa|search|summarize|classification|sentiment|entity|ner|pos|dependency|parse|translate|transliterate|detect-language|language-detection/i;
+  const VISION_RE = /vision|vl|visual|image|multimodal|omni|gpt-4o|gpt-4.1|claude-3|gemini-1\.5|gemini-2|llama-3\.2|llama-4|qwen.*vl|pixtral|minicpm|llava|bakllava|moondream|nemo.*vl|nemotron.*vl/i;
 
   const PROVIDERS = {
     openrouter: {
@@ -20,7 +20,7 @@
             vision: ((m.architecture && m.architecture.input_modalities) || []).includes('image'),
             tools: (m.supported_parameters || []).includes('tools') }));
       },
-      resetAt() { const d = new Date(); d.setUTCHours(24, 0, 0, 0); return d.getTime(); }, // 00:00 UTC = 05:30 IST
+      resetAt() { const d = new Date(); d.setUTCHours(24, 0, 0, 0); return d.getTime(); },
     },
     groq: {
       name: 'Groq', base: 'https://api.groq.com/openai/v1',
@@ -59,14 +59,13 @@
       },
     },
     xai: {
-      name: 'xAI', base: 'https://api.x.ai/v1', paid: true, // no free tier: never listed, picked or used for fallback (1.1.9)
+      name: 'xAI', base: 'https://api.x.ai/v1', paid: true,
       async models(keyRef) {
         const r = await H.net.request({ url: this.base + '/models', headers: { Authorization: 'Bearer ' + keyRef } });
         if (r.status !== 200) throw new Error('HTTP ' + r.status);
         return r.json().data.filter((m) => !SKIP_RE.test(m.id) && !/image|imagine/.test(m.id)).map((m) => ({ id: m.id, name: m.id, vision: VISION_RE.test(m.id), tools: true }));
       },
     },
-    // ---- free providers added in 1.1.9 (keys only in the on-device vault) ----
     opencode: {
       name: 'OpenCode Zen', base: 'https://opencode.ai/zen/v1', note: 'free models only',
       async models(keyRef) {
@@ -141,51 +140,105 @@
   };
   H.PROVIDERS = PROVIDERS;
 
-  // 1.1.9: free models only. Gemini 3.5 Flash is the daily default; the list is also the fallback chain (in order).
-  const OPENCODE_FREE = ['big-pickle', 'deepseek-v4.1-flash-free', 'glm-5.3-flash-free', 'mimo-v2.6-flash-free', 'nemotron-3.5-super-vl-free', 'nemotron-3.5-lightning-free', 'beam-free', 'flint-40b-free', 'pulse-alpha-free'];
-  // Cloudflare models that answer "deprecated" (error 5028): never listed or used.
-  const CF_RETIRED = new Set(['@cf/meta/llama-3.1-8b-instruct']);
-  H.DEFAULT_MODEL = 'gemini:gemini-3.5-flash';
-  H.AUTO_LONG = 'auto:long'; // 1.1.13 pseudo-model, see completeAuto
-  const RECOMMENDED = [
-    'gemini:gemini-3.5-flash', 'groq:openai/gpt-oss-120b', 'openrouter:nvidia/nemotron-3-ultra-550b-a55b:free', 'kilo:kilo-auto/free',
-    'github:openai/gpt-4.1-mini', 'mistral:mistral-medium-latest', 'gemini:gemini-3.5-flash-lite', 'cohere:command-a-03-2025',
-    'nvidia:mistralai/mistral-large-4-1t-a52b', 'nvidia:minimaxai/minimax-m3.1-flash', 'openrouter:nvidia/nemotron-3.5-lightning:free',
-    'sambanova:DeepSeek-V3.2', 'opencode:big-pickle', 'kilo:google/gemma-4-31b-it:free', 'groq:qwen/qwen3.8-27b', 'groq:openai/gpt-oss-20b',
-    'openrouter:nvidia/nemotron-3.5-super-vl:free', 'nvidia:nvidia/nemotron-3.5-super-vl-120b-a12b', 'cohere:command-a-vision-07-2025',
-    'mistral:mistral-small-latest', 'opencode:deepseek-v4.1-flash-free',
-    // Last in the fallback order: Cloudflare Workers AI (free 10,000 neurons a day), 70B first, then 8B fp8.
-    'cloudflare:@cf/meta/llama-3.3-70b-instruct-fp8-fast', 'cloudflare:@cf/meta/llama-3.1-8b-instruct-fp8',
+  // ---- working free models (updated 2026-11-15) ----
+  // OpenCode: removed deprecated models, keeping only confirmed working
+  const OPENCODE_FREE = [
+    'deepseek-v4.1-flash-free',
+    'glm-5.3-flash-free',
+    'mimo-v2.6-flash-free',
+    'nemotron-3.5-lightning-free',
+    'nemotron-3.5-super-vl-free',
   ];
+  // Cloudflare models that answer "deprecated" (error 5028): never listed or used.
+  const CF_RETIRED = new Set([
+    '@cf/meta/llama-3.1-8b-instruct',
+    '@cf/meta/llama-3.1-8b-instruct-fp8',
+  ]);
+  H.DEFAULT_MODEL = 'gemini:gemini-3.5-flash';
+  H.AUTO_LONG = 'auto:long';
+
+  // Fallback chain: most reliable first, Cloudflare last (daily limit)
+  const RECOMMENDED = [
+    // Tier 1: Most reliable, high free quotas
+    'gemini:gemini-3.5-flash',
+    'gemini:gemini-3.5-flash-lite',
+    'groq:llama-3.3-70b-versatile',
+    'groq:llama-3.1-8b-instant',
+    'groq:mixtral-8x7b-32768',
+    'groq:gemma2-9b-it',
+
+    // Tier 2: OpenRouter free models (need OR key)
+    'openrouter:nvidia/nemotron-3-ultra-550b-a55b:free',
+    'openrouter:nvidia/nemotron-3.5-lightning:free',
+    'openrouter:nvidia/nemotron-3.5-super-vl:free',
+    'openrouter:google/gemma-2-9b-it:free',
+    'openrouter:meta-llama/llama-3.1-8b-instruct:free',
+    'openrouter:mistralai/mistral-7b-instruct:free',
+
+    // Tier 3: Kilo (OpenRouter proxy)
+    'kilo:kilo-auto/free',
+    'kilo:google/gemma-4-31b-it:free',
+
+    // Tier 4: GitHub Models (need PAT)
+    'github:openai/gpt-4o-mini',
+    'github:openai/gpt-4.1-mini',
+
+    // Tier 5: Mistral free tier
+    'mistral:mistral-medium-latest',
+    'mistral:mistral-small-latest',
+
+    // Tier 6: SambaNova
+    'sambanova:DeepSeek-V3.2',
+
+    // Tier 7: OpenCode Zen
+    'opencode:deepseek-v4.1-flash-free',
+    'opencode:glm-5.3-flash-free',
+    'opencode:nemotron-3.5-super-vl-free',
+
+    // Tier 8: Cohere
+    'cohere:command-a-03-2025',
+    'cohere:command-a-vision-07-2025',
+
+    // Tier 9: NVIDIA (native app only, slow queue)
+    'nvidia:mistralai/mistral-large-4-1t-a52b',
+    'nvidia:minimaxai/minimax-m3.1-flash',
+
+    // Tier 10: Cloudflare Workers AI (10k neurons/day) — last resort
+    'cloudflare:@cf/meta/llama-3.3-70b-instruct-fp8-fast',
+  ];
+
   const SEED = {
     'gemini:gemini-3.5-flash': { name: 'Gemini 3.5 Flash', tools: true, vision: true },
     'gemini:gemini-3.5-flash-lite': { name: 'Gemini 3.5 Flash-Lite', tools: true, vision: true },
-    'groq:openai/gpt-oss-120b': { name: 'GPT-OSS 120B', tools: true },
-    'groq:openai/gpt-oss-20b': { name: 'GPT-OSS 20B', tools: true },
-    'groq:qwen/qwen3.8-27b': { name: 'Qwen 3.8 27B', tools: true, vision: true },
+    'groq:llama-3.3-70b-versatile': { name: 'Llama 3.3 70B (Groq)', tools: true, vision: true },
+    'groq:llama-3.1-8b-instant': { name: 'Llama 3.1 8B (Groq)', tools: true },
+    'groq:mixtral-8x7b-32768': { name: 'Mixtral 8x7B (Groq)', tools: true },
+    'groq:gemma2-9b-it': { name: 'Gemma 2 9B (Groq)', tools: true },
     'openrouter:nvidia/nemotron-3-ultra-550b-a55b:free': { name: 'Nemotron 3 Ultra 550B', tools: true },
     'openrouter:nvidia/nemotron-3.5-lightning:free': { name: 'Nemotron 3.5 Lightning', tools: true },
     'openrouter:nvidia/nemotron-3.5-super-vl:free': { name: 'Nemotron 3.5 Super VL', tools: true, vision: true },
+    'openrouter:google/gemma-2-9b-it:free': { name: 'Gemma 2 9B (OpenRouter)', tools: true },
+    'openrouter:meta-llama/llama-3.1-8b-instruct:free': { name: 'Llama 3.1 8B (OpenRouter)', tools: true },
+    'openrouter:mistralai/mistral-7b-instruct:free': { name: 'Mistral 7B (OpenRouter)', tools: true },
     'kilo:kilo-auto/free': { name: 'Kilo Auto (free)', tools: true },
     'kilo:google/gemma-4-31b-it:free': { name: 'Gemma 4 31B (Kilo)', tools: true, vision: true },
+    'github:openai/gpt-4o-mini': { name: 'GPT-4o mini (GitHub)', tools: true, vision: true, tier: 'low' },
     'github:openai/gpt-4.1-mini': { name: 'GPT-4.1 mini (GitHub)', tools: true, vision: true, tier: 'low' },
     'mistral:mistral-medium-latest': { name: 'Mistral Medium', tools: true, vision: true },
     'mistral:mistral-small-latest': { name: 'Mistral Small', tools: true, vision: true },
     'sambanova:DeepSeek-V3.2': { name: 'DeepSeek V3.2 (SambaNova)', tools: true },
-    'opencode:big-pickle': { name: 'Big Pickle (OpenCode)', tools: true },
     'opencode:deepseek-v4.1-flash-free': { name: 'DeepSeek V4.1 Flash (OpenCode)', tools: true },
+    'opencode:glm-5.3-flash-free': { name: 'GLM 5.3 Flash (OpenCode)', tools: true },
+    'opencode:nemotron-3.5-super-vl-free': { name: 'Nemotron 3.5 Super VL (OpenCode)', tools: true, vision: true },
     'cohere:command-a-03-2025': { name: 'Command A', tools: true },
     'cohere:command-a-vision-07-2025': { name: 'Command A Vision', vision: true },
-    'nvidia:minimaxai/minimax-m3.1-flash': { name: 'MiniMax M3.1 Flash', tools: true },
     'nvidia:mistralai/mistral-large-4-1t-a52b': { name: 'Mistral Large 4', tools: true },
-    'nvidia:nvidia/nemotron-3.5-super-vl-120b-a12b': { name: 'Nemotron 3.5 Super VL', tools: true, vision: true },
+    'nvidia:minimaxai/minimax-m3.1-flash': { name: 'MiniMax M3.1 Flash', tools: true },
     'cloudflare:@cf/meta/llama-3.3-70b-instruct-fp8-fast': { name: 'Llama 3.3 70B (Cloudflare)', tools: true },
-    'cloudflare:@cf/meta/llama-3.1-8b-instruct-fp8': { name: 'Llama 3.1 8B (Cloudflare)', tools: false },
   };
 
-  // ---------------- free-only policy (1.1.9) ----------------
+  // ---------------- free-only policy ----------------
   const GEMINI_FREE_RE = /^(gemini-\d+(\.\d+)?-flash(-lite)?(-preview)?(-\d{2}-\d{4})?|gemini-flash(-lite)?-latest|gemma-[\w.-]+)$/;
-  /** True only for models usable on a free tier/key. Paid models are never listed, picked or used for fallback. */
   H.isFree = (full) => {
     const [p, ...rest] = String(full || '').split(':'); const id = rest.join(':');
     if (!p || !id) return false;
@@ -199,33 +252,37 @@
       case 'mistral': return !/(embed|ocr|moderation|voxtral|transcribe|tts|fim|vibe-cli|leanstral)/.test(id) && (/-latest$/.test(id) || id === 'mistral-large-4');
       case 'cloudflare': return !CF_RETIRED.has(id);
       case 'xai': return false;
-      case 'groq': case 'cohere': case 'nvidia': case 'sambanova': case 'github': case 'custom': return true; // free-tier keys / your own gateway
+      case 'groq': case 'cohere': case 'nvidia': case 'sambanova': case 'github': case 'custom': return true;
       default: return false;
     }
   };
-  // Models a provider told us are retired (e.g. Cloudflare 5028) — hidden and skipped from then on.
   const RET_KEY = 'hark.retired';
   const retiredSet = (() => { try { return new Set(JSON.parse(localStorage.getItem(RET_KEY) || '[]')); } catch (_) { return new Set(); } })();
   H.retired = (full) => retiredSet.has(full);
   H.retire = (full) => { retiredSet.add(full); localStorage.setItem(RET_KEY, JSON.stringify([...retiredSet])); if (H.catalog && H.catalog.models[full]) { delete H.catalog.models[full]; saveCatalog(); } };
 
-  // ---------------- catalog ----------------
+  // ---------------- catalog persistence ----------------
   const CAT_KEY = 'hark.catalog';
-  function loadCatalog() {
-    try { const c = JSON.parse(localStorage.getItem(CAT_KEY) || 'null'); if (c && c.models) { for (const k in c.models) if (!H.isFree(k)) delete c.models[k]; for (const id in SEED) if (!c.models[id] && !c.updated) c.models[id] = Object.assign({ id: id.slice(id.indexOf(':') + 1), provider: id.split(':')[0], seed: true }, SEED[id]); return c; } } catch (_) {}
+  function saveCatalog() { try { localStorage.setItem(CAT_KEY, JSON.stringify(H.catalog)); } catch (_) {} }
+  H.catalog = (() => {
+    try {
+      const c = JSON.parse(localStorage.getItem(CAT_KEY) || 'null');
+      if (c && c.models) {
+        for (const k in c.models) if (!H.isFree(k)) delete c.models[k];
+        for (const id in SEED) if (!c.models[id] && !c.updated) c.models[id] = Object.assign({ id: id.slice(id.indexOf(':') + 1), provider: id.split(':')[0], seed: true }, SEED[id]);
+        return c;
+      }
+    } catch (_) {}
     const models = {};
-    for (const id in SEED) { const [p, ...rest] = id.split(':'); models[id] = Object.assign({ id: rest.join(':'), provider: p, seed: true }, SEED[id]); }
-    return { updated: 0, models, newIds: [], errors: {} };
-  }
-  H.catalog = loadCatalog();
-  const saveCatalog = () => localStorage.setItem(CAT_KEY, JSON.stringify(H.catalog));
-
+    for (const id in SEED) {
+      const [p, ...rest] = id.split(':'); models[id] = Object.assign({ id: rest.join(':'), provider: p, seed: true }, SEED[id]);
+    }
+    return { updated: 0, models, newIds: [] };
+  })();
   H.modelInfo = (full) => {
-    if (full === H.AUTO_LONG) return { full, provider: 'auto', id: 'long', name: 'Auto (Long chats)', tools: true, vision: true, auto: true };
-    const m = H.catalog.models[full];
-    if (m) return Object.assign({ full }, m);
-    const [p, ...rest] = String(full).split(':');
-    return { full, provider: p, id: rest.join(':'), name: rest.join(':'), tools: true, vision: VISION_RE.test(full) };
+    const m = H.catalog && H.catalog.models[full];
+    if (m) return { full, provider: m.provider, id: m.id, name: m.name || m.id, tools: m.tools !== false, vision: m.vision !== false };
+    const [p, ...rest] = String(full || '').split(':'); return { full, provider: p, id: rest.join(':'), name: rest.join(':'), tools: true, vision: VISION_RE.test(full) };
   };
   H.modelLabel = (full) => {
     const m = H.modelInfo(full);
@@ -236,18 +293,15 @@
   H.providerReady = (p) => p === 'auto' ? H.autoLongOrder().length > 0 : p === 'custom' ? !!PROVIDERS.custom.base : p === 'cloudflare' ? !!PROVIDERS.cloudflare.account && H.vault.has(p) : H.vault.has(p);
   H.recommended = () => RECOMMENDED.filter((id) => H.isFree(id) && H.providerReady(id.split(':')[0]) && !(H.isDeadModel && H.isDeadModel(id)));
   H.RECOMMENDED = RECOMMENDED;
-  /** Settings or tasks still pointing at a paid / retired model → the free daily default (or the first ready free pick). */
   H.freeModelOr = (full) => (H.isFree(full) ? full : (H.providerReady('gemini') || !H.recommended().length ? H.DEFAULT_MODEL : H.recommended()[0]));
   (function migrateDefault() {
     const s = H.settings; if (!s) return;
-    // 1.1.9: the daily default becomes Gemini 3.5 Flash (free), once; afterwards the user's own pick is kept.
     if (!s.migrated119) { s.model = H.DEFAULT_MODEL; s.migrated119 = true; }
     s.model = H.freeModelOr(s.model);
     (s.tasks || []).forEach((t) => { if (t.model) t.model = H.freeModelOr(t.model); });
     H.saveSettings();
   })();
 
-  /** Refresh the live catalog. Returns {added:[], removed:[]} */
   H.refreshCatalog = async function (opts) {
     const first = !H.catalog.updated;
     const before = new Set(Object.keys(H.catalog.models).filter((k) => !H.catalog.models[k].seed));
@@ -264,19 +318,16 @@
         } catch (e) { errors[p] = e.message; }
       }
     }));
-    // Keep models of providers that failed this time (do not remove on a network blip).
     for (const k in H.catalog.models) {
       const p = H.catalog.models[k].provider;
       if (!okProviders.has(p) && !next[k] && H.providerReady(p) && H.isFree(k)) next[k] = H.catalog.models[k];
     }
-    // Seeds stay visible until their provider's real list arrives.
     for (const id in SEED) { const p = id.split(':')[0]; if (!okProviders.has(p) && !next[id] && H.isFree(id)) next[id] = H.catalog.models[id] || Object.assign({ id: id.slice(p.length + 1), provider: p, seed: true }, SEED[id]); }
     const after = new Set(Object.keys(next));
     const added = first ? [] : [...after].filter((k) => !before.has(k) && !(H.catalog.models[k] && H.catalog.models[k].seed));
     const removed = [...before].filter((k) => !after.has(k) && okProviders.has(H.catalog.models[k].provider));
     H.catalog = { updated: Date.now(), models: next, newIds: Array.from(new Set([...(H.catalog.newIds || []), ...added])).filter((k) => next[k]), errors };
     saveCatalog();
-    // Selected model gone? fall back.
     if (!next[H.settings.model] && okProviders.has(H.settings.model.split(':')[0])) {
       const fb = RECOMMENDED.find((id) => next[id] && H.isFree(id)) || Object.keys(next)[0];
       if (fb) { const old = H.settings.model; H.settings.model = fb; H.saveSettings(); H.emit && H.emit('model-fallback', { old, now: fb }); }
@@ -293,7 +344,6 @@
   H.clearExhausted = () => { for (const k in exhausted) delete exhausted[k]; localStorage.setItem(EX_KEY, '{}'); };
 
   const nextUtcMidnight = () => { const d = new Date(); d.setUTCHours(24, 0, 0, 0); return d.getTime(); };
-  /** Cloudflare's daily free allowance (10,000 neurons) is used up: "you have used up your daily free allocation of 10,000 neurons". */
   const CF_DAILY_RE = /daily free allocation|10,?000 neurons|neurons? (limit|allocation)|used up your daily/i;
   H.CF_DAILY_MSG = 'Cloudflare: daily free limit used, resets 05:30 IST';
   function failoverWindow(provider, status, text) {
@@ -310,17 +360,12 @@
     if (status === 403 && /quota|limit|exceed|insufficient|credit|billing|rate/.test(t)) return { until: Date.now() + 3600e3, why: 'quota (403)' };
     return null;
   }
-
-  // Output-token cap per provider (without it some providers stop at ~256 tokens, e.g. Cloudflare Workers AI).
-  // A 400 that mentions max_tokens drops it for that provider and retries once without it.
   const MAX_OUT = { openrouter: 8192, groq: 8192, cohere: 4000, nvidia: 8192, gemini: 8192, xai: 8192, opencode: 8192, kilo: 8192, sambanova: 4096, mistral: 8192, github: 4000, cloudflare: 4096, custom: 8192 };
   const NO_MAXTOK = new Set();
   H.MAX_OUT = MAX_OUT;
-  // Providers that send token usage in the last stream chunk when asked (stream_options.include_usage).
   const USAGE_OPT = new Set(['groq', 'gemini', 'mistral', 'github', 'sambanova', 'opencode', 'nvidia', 'cloudflare']);
 
   // ---------------- message conversion ----------------
-  /** Cloudflare Workers AI wants plain string content everywhere (no null content, no content arrays). */
   function toApiMessages(msgs, vision, provider) {
     const out = toApiMessages0(msgs, vision);
     if (provider !== 'cloudflare') return out;
@@ -358,10 +403,6 @@
     };
   }
 
-  /**
-   * Stream one completion. Returns {content, reasoning, tool_calls, finish, keyLabel}
-   * cb: {onText(full), onReasoning(full)}
-   */
   async function completeOnce(full, messages, tools, cb, signal) {
     const info = H.modelInfo(full);
     const P = PROVIDERS[info.provider];
@@ -397,11 +438,10 @@
         const r = d.reasoning || d.reasoning_content;
         if (r) { reasoning += r; cb.onReasoning && cb.onReasoning(reasoning); }
         if (d.content) {
-          // Split inline <think> blocks (some open models) into reasoning.
           let t = d.content;
           while (t) {
             if (inThink) { const e = t.indexOf('</think>'); if (e < 0) { reasoning += t; t = ''; } else { reasoning += t.slice(0, e); t = t.slice(e + 8); inThink = false; } cb.onReasoning && cb.onReasoning(reasoning); }
-            else { const s = t.indexOf('<think>'); if (s < 0) { content += t; t = ''; } else { content += t.slice(0, s); t = t.slice(s + 7); inThink = true; } }
+            else { const s = t.indexOf('</think>'); if (s < 0) { content += t; t = ''; } else { content += t.slice(0, s); t = t.slice(s + 8); inThink = true; } }
           }
           cb.onText && cb.onText(content);
         }
@@ -415,11 +455,10 @@
       });
       let res; let fatal = null; let raw = ''; let gotEvent = false;
       const parseWrap = (t) => { if (raw.length < 400000) raw += t; if (fatal) return; try { parse(t); } catch (e) { fatal = e; } };
-      const origOnText = cb.onText; 
+      const origOnText = cb.onText;
       res = await H.net.stream({ url: P.base + '/chat/completions', method: 'POST', headers, body: JSON.stringify(body), signal }, parseWrap);
       gotEvent = /\ndata:|^data:/.test(raw);
       if (!fatal && res.status === 200 && !gotEvent && /^\s*\{/.test(raw)) {
-        // Server ignored stream:true and sent one JSON body.
         try {
           const j = JSON.parse(raw);
           if (j.error) { fatal = Object.assign(new Error(j.error.message || 'error'), { status: j.error.code }); }
@@ -464,11 +503,8 @@
     try { const j = JSON.parse(t); const e = j.error || (j.errors && j.errors[0]) || j; return (e.message || e.detail || JSON.stringify(e)).toString().slice(0, 300); } catch (_) { return String(t || '').slice(0, 300); }
   }
 
-  /** Complete with automatic model fallback when keys are exhausted or the provider is down. */
-  // ---------------- broken-model registry (1.1.14) ----------------
-  // A model that answers 404 / "not found" / "unsupported" for his keys is hidden everywhere (picker, Auto, fallback,
-  // default, scheduled tasks) until the next daily health check says it works again.
-  const DEAD_KEY = 'hark.deadModels';   // {model: {until, why}}
+  // ---------------- broken-model registry ----------------
+  const DEAD_KEY = 'hark.deadModels';
   const GONE_RE = /not found|not_found|does not exist|unknown model|no such model|not supported|unsupported|no endpoints|not available for|invalid model|model_not_found|decommission|retired|deprecated/i;
   const deadMap = () => { try { return JSON.parse(localStorage.getItem(DEAD_KEY) || '{}') || {}; } catch (_) { return {}; } };
   H.isDeadModel = (full) => { const d = deadMap()[full]; return !!(d && d.until > Date.now()); };
@@ -486,7 +522,7 @@
         r.model = model; r.switched = model !== full ? { from: full, to: model } : null;
         return r;
       } catch (e) {
-        if (H.netErr && H.netErr(e)) throw e; // a dropped link is retried by the caller, not a reason to switch models
+        if (H.netErr && H.netErr(e)) throw e;
         const gone = H.modelGone(e); if (gone) H.markDead(model, e.message);
         const canFallback = gone || e.status === 429 || (H.settings.autoFallback && (e.code === 'exhausted' || e.code === 'retired' || e.code === 'nokey' || e.code === 'native' || (e.status && e.status >= 500) || /quota|rate|limit|network|timeout|Unable to resolve|failed to connect/i.test(e.message)));
         if (!canFallback) throw e;
@@ -500,36 +536,33 @@
     throw new Error('No model available right now');
   };
 
-
-  // ---------------- Auto (Long chats) — 1.1.13 ----------------
-  // A pseudo-model: runs the Long chats models one after another. It starts with the model that last worked today (IST),
-  // and when a call fails on quota / daily limit / rate limit / exhausted keys / 5xx / retired it moves to the next one,
-  // through the whole list. A reply cut mid-stream keeps its partial text and the next model continues it.
+  // ---------------- Auto (Long chats) ----------------
   H.isAuto = (full) => full === H.AUTO_LONG;
-  const AUTO_KEY = 'hark.autoLong';      // {day, model}: the model that answered last (sticky for the IST day)
-  const ASKIP_KEY = 'hark.autoSkip';     // {model: until}: models that failed without a key/quota mark (5xx, …)
+  const AUTO_KEY = 'hark.autoLong';
+  const ASKIP_KEY = 'hark.autoSkip';
   const istDay = (t) => new Date((t || Date.now()) + 5.5 * 3600e3).toISOString().slice(0, 10);
   const loadJ = (k, d) => { try { return JSON.parse(localStorage.getItem(k) || '') || d; } catch (_) { return d; } };
-  // Quality + speed order: Gemini Flash, Mistral (large → medium → small), OpenCode Zen, Kilo, Gemini Flash-Lite, NVIDIA NIM last (1.1.14).
   function autoRank(full) {
     const p = full.split(':')[0]; const id = full.slice(p.length + 1);
     if (p === 'gemini') return /lite/.test(id) ? 600 : /latest/.test(id) ? 11 : /preview/.test(id) ? 12 : 10;
-    if (p === 'mistral') return 100 + (/large/.test(id) ? 0 : /medium/.test(id) ? 1 : /magistral/.test(id) ? 3 : /small/.test(id) ? 4 : 2);
+    if (p === 'groq') return 20 + (/70b/.test(id) ? 0 : /mixtral/.test(id) ? 1 : /gemma/.test(id) ? 2 : 3);
+    if (p === 'mistral') return 100 + (/large/.test(id) ? 0 : /medium/.test(id) ? 1 : /small/.test(id) ? 2 : 3);
     if (p === 'opencode') { const i = OPENCODE_FREE.indexOf(id); return 200 + (i < 0 ? 50 : i); }
     if (p === 'kilo') return 300 + (/kilo-auto/.test(id) ? 0 : 1);
-    if (p === 'nvidia') return 700; // 1.1.14: last — NVIDIA's free queue is slow and some catalog models 404 per account
+    if (p === 'openrouter') return 400;
+    if (p === 'github') return 500;
+    if (p === 'sambanova') return 600;
+    if (p === 'cohere') return 650;
+    if (p === 'nvidia') return 700;
     return 900;
   }
-  /** Every Long chats model that could run now (key present, free, native-only providers only inside the app), in Auto order. */
   H.autoLongOrder = () => !H.longChat || !H.catalog ? [] : Object.keys(H.catalog.models)
     .filter((id) => { const p = id.split(':')[0]; return id !== H.AUTO_LONG && PROVIDERS[p] && !PROVIDERS[p].paid && H.providerReady(p) && H.isFree(id) && H.longChat(id) && (H.native || !PROVIDERS[p].nativeOnly); })
     .sort((a, b) => autoRank(a) - autoRank(b) || a.localeCompare(b));
   const autoSkipped = (full) => { const s = loadJ(ASKIP_KEY, {}); return s[full] && s[full] > Date.now(); };
   const autoSkip = (full, ms) => { const s = loadJ(ASKIP_KEY, {}); for (const k in s) if (s[k] < Date.now()) delete s[k]; s[full] = Date.now() + ms; localStorage.setItem(ASKIP_KEY, JSON.stringify(s)); };
   const keysResting = (full) => { const p = full.split(':')[0]; const ks = H.vault.byProvider(p); return ks.length > 0 && ks.every((k) => !usable(k.id)); };
-  /** Is this model worth trying right now? */
   const autoAvailable = (full, needVision) => !H.isDeadModel(full) && !(H.usage && H.usage.isZero(full)) && !keysResting(full) && !autoSkipped(full) && (!needVision || H.modelInfo(full).vision);
-  /** The order for this call: the sticky model of the day first, then the ones after it, then the ones before it. */
   H.autoLongPlan = (needVision) => {
     const all = H.autoLongOrder(); const st = loadJ(AUTO_KEY, {});
     const i = st.day === istDay() ? all.indexOf(st.model) : -1;
@@ -539,15 +572,15 @@
   H.autoLongCurrent = () => H.autoLongPlan(false)[0] || null;
   H.autoLongReset = () => { localStorage.removeItem(AUTO_KEY); localStorage.removeItem(ASKIP_KEY); };
   const AUTO_SWITCH_RE = /quota|daily|limit|rate|exhaust|resting|credit|exceed|overload|unavailable|capacity|retired|deprecated|no longer/i;
-  const AUTO_GONE_RE = /not found|not_found|does not exist|unknown model|no such model|not supported|unsupported|no endpoints|not available for|invalid model|model_not_found/i; // 1.1.14
-  const AUTO_FIRST_MS = 30e3; // 1.1.14: no first word in 30 s → try the next model instead of waiting
+  const AUTO_GONE_RE = /not found|not_found|does not exist|unknown model|no such model|not supported|unsupported|no endpoints|not available for|invalid model|model_not_found/i;
+  const AUTO_FIRST_MS = 30e3;
   async function completeAuto(messages, tools, cb, signal) {
     const needVision = messages.some((m) => m.images && m.images.length);
     const plan = H.autoLongPlan(needVision);
     if (!plan.length) throw Object.assign(new Error('Auto (Long chats): every Long chats model is out of quota or unavailable right now' + (needVision ? ' for images' : '') + '. Quotas reset at 05:30 IST (some hourly).'), { code: 'exhausted' });
     let partial = ''; let partialReason = ''; let first = null; let lastErr = null; const why = [];
     for (const model of plan) {
-      if (!autoAvailable(model, needVision)) continue; // a provider marked during this loop (shared key)
+      if (!autoAvailable(model, needVision)) continue;
       let seen = ''; let slow = false; let got = false;
       const child = new AbortController();
       const onParent = () => child.abort();
@@ -571,7 +604,7 @@
         let e = e0;
         if (slow && !(signal && signal.aborted)) e = Object.assign(new Error('no reply in 30 s'), { code: 'slow' });
         else {
-          if (H.netErr && H.netErr(e)) { if (seen) e.partial = partial + seen; throw e; } // dropped link: the caller retries
+          if (H.netErr && H.netErr(e)) { if (seen) e.partial = partial + seen; throw e; }
           if (signal && signal.aborted) throw e;
         }
         const st = Number(e.status) || 0;
@@ -579,9 +612,8 @@
         const switchable = gone || e.code === 'slow' || ['exhausted', 'retired', 'nokey', 'native'].includes(e.code) || st === 429 || st === 402 || st === 403 || st >= 500 || AUTO_SWITCH_RE.test(e.message || '') || /network|timeout|Unable to resolve|failed to connect/i.test(e.message || '');
         if (!switchable) throw e;
         lastErr = e; first = first || model;
-        if (gone) { autoSkip(model, 24 * 3600e3); H.markDead(model, e.message); } // not served for this key: hidden everywhere until the next daily check
+        if (gone) { autoSkip(model, 24 * 3600e3); H.markDead(model, e.message); }
         else if (e.code === 'slow') autoSkip(model, 15 * 60e3);
-        // Not marked by the key/quota logic (5xx, odd errors): rest this model for a while so later messages skip it too.
         else if (e.code !== 'exhausted' && !(H.usage && H.usage.isZero(model))) autoSkip(model, st >= 500 || !st ? 10 * 60e3 : 30 * 60e3);
         if (seen.trim()) { partial += seen; }
         why.push(H.modelLabel(model) + ': ' + String(e.message || 'failed').replace(/^[^:]{0,40}:\s*/, '').slice(0, 80));
@@ -591,11 +623,9 @@
     }
     throw Object.assign(new Error('Auto (Long chats): all ' + plan.length + ' Long chats models failed — last: ' + (lastErr ? lastErr.message : 'unknown')), { code: 'exhausted', status: lastErr && lastErr.status, partial: partial || undefined });
   }
-  // ---------------- daily model health check (1.1.14) ----------------
-  // Once per IST day every free model he can pick gets a tiny "reply OK" call, 3 at a time. Broken ones (404,
-  // unsupported, bad key, no answer in 25 s) are hidden everywhere until the next day's check; working ones come back.
-  // If his default or a scheduled task's model broke, it moves to Auto (Long chats).
-  const HC_KEY = 'hark.modelCheck';     // {day, ok:[...], bad:{model: why}, at}
+
+  // ---------------- daily model health check ----------------
+  const HC_KEY = 'hark.modelCheck';
   H.modelCheckInfo = () => { try { return JSON.parse(localStorage.getItem(HC_KEY) || '{}') || {}; } catch (_) { return {}; } };
   let hcRunning = false;
   H.checkModels = async function (force) {
@@ -616,9 +646,9 @@
           if (r.finish === 'aborted') throw Object.assign(new Error('no answer in 25 s'), { code: 'slow' });
           ok.push(id); H.markAlive(id);
         } catch (e) {
-          if (e.code === 'exhausted' || e.status === 429 || /quota|rate|limit|exceed/i.test(e.message || '')) { ok.push(id); return; } // works, just out of quota now
+          if (e.code === 'exhausted' || e.status === 429 || /quota|rate|limit|exceed/i.test(e.message || '')) { ok.push(id); return; }
           if (ac.signal.aborted) e = Object.assign(new Error('no answer in 25 s'), { code: 'slow' });
-          else if (H.netErr && H.netErr(e)) return; // phone offline: no verdict
+          else if (H.netErr && H.netErr(e)) return;
           bad[id] = String(e.message || 'failed').slice(0, 120);
           H.markDead(id, bad[id], 26 * 3600e3);
         } finally { clearTimeout(t); }
@@ -640,7 +670,6 @@
     return full === H.AUTO_LONG ? completeAuto(messages, tools, cb || {}, signal) : completeFallback(full, messages, tools, cb, signal);
   };
 
-  /** One-shot non-streaming helper (titles etc.). */
   H.quick = async function (prompt, maxTokens) {
     let out = '';
     try {
