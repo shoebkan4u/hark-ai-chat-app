@@ -116,21 +116,19 @@
   // ---------------- import ----------------
   SECTIONS.import = () => screen('Import from Hark', (b) => {
     const file = el('input', { type: 'file', accept: '.json,application/json' });
-    const pass = el('input', { type: 'password', placeholder: 'Passphrase from Hark', autocomplete: 'off' });
+    const pass = el('input', { type: 'password', placeholder: 'Passphrase from Hark (leave empty for no-passphrase file)', autocomplete: 'off' });
+    const b64 = el('textarea', { placeholder: 'Or paste the full base64 block here (from the chat)', rows: 6, style: { width: '100%', fontFamily: 'monospace', fontSize: '11px', marginTop: '8px' } });
     const status = el('div', { class: 'note' });
-    const go = el('button', { class: 'btn block', text: 'Decrypt and import' });
-    go.onclick = async () => {
-      const f = file.files[0];
-      if (!f) return H.toast('Choose the hark-import file');
-      if (!pass.value.trim()) return H.toast('Enter the passphrase');
-      go.disabled = true; status.textContent = 'Decrypting (a few seconds)…';
+    const goFile = el('button', { class: 'btn block', text: 'Decrypt and import from file' });
+    const goB64 = el('button', { class: 'btn block', style: { marginTop: '8px' }, text: 'Decode base64 and import' });
+    const tryImport = async (jsonText, passphrase) => {
+      goFile.disabled = true; goB64.disabled = true; status.textContent = 'Decrypting (a few seconds)…';
       try {
-        const r = await H.vault.importFile(await f.text(), pass.value);
+        const r = await H.vault.importFile(jsonText, passphrase);
         pass.value = '';
         (r.openalgo || []).forEach((o) => {
           const acc = H.settings.openalgo.find((a) => a.id === o.id);
           if (!acc) return;
-          // SSH tunnels need the Android app; a browser keeps using the ngrok address.
           const tunnel = /\.hark\.local/.test(o.base || '');
           acc.base = tunnel && (r.browserOnly || !H.opsNative) ? (o.fallbackBase || acc.base) : o.base;
           acc.fallbackBase = o.fallbackBase || '';
@@ -152,10 +150,29 @@
         H.toast('Import complete');
         H.ui.refreshCatalog(true);
       } catch (e) { status.textContent = 'Import failed: ' + e.message; }
-      go.disabled = false;
+      goFile.disabled = false; goB64.disabled = false;
+    };
+    goFile.onclick = async () => {
+      const f = file.files[0];
+      if (!f) return H.toast('Choose the hark-import file');
+      await tryImport(await f.text(), pass.value.trim());
+    };
+    goB64.onclick = async () => {
+      const t = b64.value.trim();
+      if (!t) return H.toast('Paste the base64 block first');
+      let jsonText;
+      try {
+        const binary = atob(t);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+        jsonText = new TextDecoder().decode(bytes);
+      } catch (e) { return H.toast('Invalid base64: ' + e.message); }
+      await tryImport(jsonText, pass.value.trim());
     };
     b.append(el('div', { class: 'note', text: 'Hark gave you an encrypted file (hark-import.enc.json) and a passphrase separately. The file is decrypted on this phone (AES-256-GCM, PBKDF2-SHA256 310k) and its keys go straight into the vault. Importing again replaces keys with the same names.' }),
-      field('Import file', file), field('Passphrase', pass), go, status);
+      field('Import file', file), field('Passphrase', pass),
+      el('div', { class: 'note', style: { marginTop: '8px' }, text: '— OR —' }),
+      field('Paste base64', b64), goFile, goB64, status);
   });
 
   // ---------------- models ----------------
